@@ -14,10 +14,11 @@ from CLOUDSERVER.auth.verify import verify_api_key
 router = APIRouter()
 
 # ==========================================
-# 📥 USER INPUT PAYLOAD FORMAT
+# 📥 USER INPUT PAYLOAD FORMAT (UPDATED)
 # ==========================================
 class NewDeployPayload(BaseModel):
-    repo_name: str      # GitHub pe repo ka naam (e.g., "MYRDLMUSIC")
+    repo_url: str       # GitHub ka poora link (e.g., "https://github.com/HellfireDevs/YUKIMUSICS.git")
+    repo_name: str      # Sirf repo ka naam webhook ke liye (e.g., "YUKIMUSICS")
     app_name: str       # PM2 ka unique naam (e.g., "user1_bot")
     folder_path: str    # VPS mein kahan code rakha hai
 
@@ -27,7 +28,7 @@ class NewDeployPayload(BaseModel):
 @router.post("/deploy-new")
 async def create_new_deployment(
     payload: NewDeployPayload,
-    current_user: str = Depends(verify_api_key) # 🔐 Ye line API key check karke Owner ka naam degi
+    current_user: str = Depends(verify_api_key) # 🔐 API key check karke Owner ka naam (username) aayega
 ):
     """
     Jab user apni website se naya bot setup karega toh ye API hit hogi.
@@ -41,10 +42,11 @@ async def create_new_deployment(
 
     # 💾 CHECK 2: MongoDB mein User (Owner) ke naam ke sath save karna
     bot_data = {
-        "repo_name": payload.repo_name,
+        "repo_url": payload.repo_url,    # Taki aage VPS ko pata rahe kahan se clone karna hai
+        "repo_name": payload.repo_name,  # GitHub webhook is naam se search marega DB mein
         "pm2_name": payload.app_name,
         "folder_path": payload.folder_path,
-        "owner": current_user  # <--- Yehi wo trick hai jisse Dashboard chalega!
+        "owner": current_user  # Dashboard pe dikhane ke liye owner tag
     }
     
     await register_new_bot(bot_data)
@@ -83,16 +85,18 @@ async def github_webhook(
 
     try:
         payload = await request.json()
-        repo_name = payload.get("repository", {}).get("name")
         
-        if not repo_name:
+        # 🚨 Webhook sirf "YUKIMUSICS" jaisa naam bhejta hai, poora URL nahi
+        incoming_repo_name = payload.get("repository", {}).get("name")
+        
+        if not incoming_repo_name:
             return {"status": "ignored", "message": "Repository name not found in payload."}
 
-        # 🔍 MongoDB mein Repo check karo
-        bot_info = await get_bot_by_repo(repo_name)
+        # 🔍 MongoDB mein Repo check karo (Isiliye payload mein repo_name alag rakha tha)
+        bot_info = await get_bot_by_repo(incoming_repo_name)
         
         if not bot_info:
-            return {"status": "ignored", "message": "Ye repo server pe registered nahi hai."}
+            return {"status": "ignored", "message": f"Repo '{incoming_repo_name}' server pe registered nahi hai."}
             
         # Background task trigger kar do
         background_tasks.add_task(run_background_update, bot_info["folder_path"], bot_info["pm2_name"])
