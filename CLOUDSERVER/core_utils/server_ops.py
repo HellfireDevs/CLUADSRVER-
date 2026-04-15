@@ -34,7 +34,7 @@ def stop_pm2(app_name: str):
 
 
 # ==========================================
-# 2. SMART GIT ENGINE (Init + Fetch + Reset + VENV)
+# 2. SMART GIT ENGINE (Init + Fetch + Reset + Clean + VENV)
 # ==========================================
 def install_requirements(folder_path: str):
     """VENV ke andar specific requirements install karne ke liye (Reset ke time kaam ayega)"""
@@ -50,7 +50,7 @@ def install_requirements(folder_path: str):
 
 def pull_latest_code(repo_path: str, repo_url: str = None):
     """
-    Smart Clone/Pull & Auto-VENV: 
+    Smart Clone/Pull & Auto-VENV with GUNDA FORCE PULL (Clean + Reset)
     """
     if not os.path.exists(repo_path):
         os.makedirs(repo_path, exist_ok=True)
@@ -67,12 +67,26 @@ def pull_latest_code(repo_path: str, repo_url: str = None):
             subprocess.run(["git", "init"], cwd=repo_path, check=True)
             subprocess.run(["git", "remote", "add", "origin", repo_url], cwd=repo_path, check=True)
             subprocess.run(["git", "fetch", "--all"], cwd=repo_path, check=True)
-            subprocess.run(["git", "reset", "--hard", "origin/main"], cwd=repo_path, check=True)
+            
+            # Smart Branch Resolver (main vs master)
+            try:
+                subprocess.run(["git", "reset", "--hard", "origin/main"], cwd=repo_path, check=True)
+            except:
+                subprocess.run(["git", "reset", "--hard", "origin/master"], cwd=repo_path, check=True)
+                
             print("✅ [GIT] Successfully pulled code into the folder!")
         else:
             print(f"📥 [GIT] Updating existing code in {repo_path}...")
             subprocess.run(["git", "fetch", "--all"], cwd=repo_path, check=True)
-            subprocess.run(["git", "reset", "--hard", "origin/main"], cwd=repo_path, check=True)
+            
+            # 💣 GUNDA LOGIC: Force clean untracked garbage before reset!
+            print(f"🧹 [GIT] Sweeping local untracked changes...")
+            subprocess.run(["git", "clean", "-fd"], cwd=repo_path, check=True) 
+            
+            try:
+                subprocess.run(["git", "reset", "--hard", "origin/main"], cwd=repo_path, check=True)
+            except:
+                subprocess.run(["git", "reset", "--hard", "origin/master"], cwd=repo_path, check=True)
         
         # --- VENV LOGIC ---
         venv_path = os.path.join(repo_path, "venv")
@@ -159,3 +173,4 @@ def restart_pm2(app_name: str, folder_path: str, use_docker: bool = False, start
     except Exception as e:
         print(f"❌ [SYSTEM ERROR]: {str(e)}")
         raise Exception(f"Deployment System Error: {str(e)}")
+        
