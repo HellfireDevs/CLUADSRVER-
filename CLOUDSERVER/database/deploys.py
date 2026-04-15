@@ -6,6 +6,10 @@ from CLOUDSERVER.database.database import deploys_collection, payments_collectio
 
 async def register_new_bot(bot_data: dict):
     """Naya bot DB mein register karega"""
+    # ⚙️ NAYA: Default Auto-deploy ON set karega agar mention nahi hai
+    if "auto_deploy" not in bot_data:
+        bot_data["auto_deploy"] = True
+        
     await deploys_collection.insert_one(bot_data)
     return True
 
@@ -46,6 +50,15 @@ async def delete_bot_from_db(app_name: str):
     """MongoDB se bot ka record hamesha ke liye delete kar dega"""
     result = await deploys_collection.delete_one({"pm2_name": app_name})
     return result.deleted_count > 0
+
+# 🔥 NAYA: Auto-Deploy Toggle Function
+async def toggle_auto_deploy(app_name: str, status: bool):
+    """Auto-deploy (GitHub Webhook) ko ON/OFF karne ke liye"""
+    result = await deploys_collection.update_one(
+        {"pm2_name": app_name},
+        {"$set": {"auto_deploy": status}}
+    )
+    return result.modified_count > 0
 
 # ==========================================
 # 💸 PAYMENT & TRANSACTION DB FUNCTIONS
