@@ -1,4 +1,4 @@
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from pydantic import BaseModel, EmailStr
 import smtplib
 from email.mime.text import MIMEText
@@ -8,6 +8,8 @@ import os
 import hashlib
 from dotenv import load_dotenv
 import httpx # 🛡️ NEW: Turnstile verify karne ke liye
+import requests # 📍 NEW: IP se location nikalne ke liye
+from datetime import datetime # 🕒 NEW: Login time ke liye
 
 # 🚀 Naya MongoDB Import
 from CLOUDSERVER.database.user import create_user, get_user_by_username, get_user_by_email, update_user_password
@@ -73,17 +75,14 @@ async def verify_turnstile(token: str):
         return res.get("success", False)
 
 # ==========================================
-# 📧 1. REGISTRATION EMAIL TEMPLATE
+# 📧 EMAIL TEMPLATES (OTP, ALERTS, WELCOME)
 # ==========================================
 def send_otp_email(receiver_email: str, username: str, otp: int):
     sender_email = os.getenv("SENDER_EMAIL")
     sender_password = os.getenv("SENDER_PASSWORD")
-
-    if not sender_email or not sender_password:
-        return
+    if not sender_email or not sender_password: return
 
     subject = "☁️ Welcome! Verify Your Cloud API Account"
-    
     html_content = f"""
     <html>
       <body style="font-family: Arial, sans-serif; background-color: #f4f4f9; padding: 20px;">
@@ -101,34 +100,14 @@ def send_otp_email(receiver_email: str, username: str, otp: int):
       </body>
     </html>
     """
+    _send_email_smtp(receiver_email, subject, html_content, "Cloud Engine")
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = f"Cloud Engine <{sender_email}>"
-    msg["To"] = receiver_email
-    msg.attach(MIMEText(html_content, "html"))
-
-    try:
-        server = smtplib.SMTP("smtp.gmail.com", 587)
-        server.starttls()
-        server.login(sender_email, sender_password)
-        server.sendmail(sender_email, receiver_email, msg.as_string())
-        server.quit()
-    except Exception as e:
-        print(f"🚨 [EMAIL FAILED] {str(e)}")
-
-# ==========================================
-# 📧 2. FORGOT PASSWORD EMAIL TEMPLATE
-# ==========================================
 def send_reset_otp_email(receiver_email: str, username: str, otp: int):
     sender_email = os.getenv("SENDER_EMAIL")
     sender_password = os.getenv("SENDER_PASSWORD")
-
-    if not sender_email or not sender_password:
-        return
+    if not sender_email or not sender_password: return
 
     subject = "🔒 Password Reset Request - Cloud API"
-    
     html_content = f"""
     <html>
       <body style="font-family: Arial, sans-serif; background-color: #f4f4f9; padding: 20px;">
@@ -146,13 +125,69 @@ def send_reset_otp_email(receiver_email: str, username: str, otp: int):
       </body>
     </html>
     """
+    _send_email_smtp(receiver_email, subject, html_content, "Cloud Security")
 
+def send_welcome_email(receiver_email: str, username: str):
+    """Naya Account banne par Congratulations mail"""
+    subject = "🎉 Welcome to NEX CLOUD!"
+    html_content = f"""
+    <html>
+      <body style="font-family: Arial, sans-serif; background-color: #050505; color: white; padding: 20px;">
+        <div style="max-width: 500px; margin: auto; background: #0a0a0a; padding: 30px; border-radius: 15px; border: 1px solid #3b82f6; box-shadow: 0px 0px 20px rgba(59,130,246,0.3);">
+          <h2 style="color: #3b82f6; text-align: center;">Welcome to the Elite Cloud, {username}! 🚀</h2>
+          <p style="font-size: 16px; color: #ddd;">Your account has been successfully created.</p>
+          <p style="font-size: 15px; color: #bbb;">You can now deploy bots, host APIs, and manage your servers with zero downtime.</p>
+          <div style="text-align: center; margin-top: 30px;">
+             <a href="https://cluadwebsite.vercel.app/dashboard" style="background: #3b82f6; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold;">Go to Dashboard</a>
+          </div>
+        </div>
+      </body>
+    </html>
+    """
+    _send_email_smtp(receiver_email, subject, html_content, "NEX Cloud")
+
+def send_login_alert(receiver_email: str, username: str, ip_address: str):
+    """Naya login hone par security alert with IP & Location"""
+    location = "Unknown"
+    try:
+        ip_data = requests.get(f"http://ip-api.com/json/{ip_address}", timeout=3).json()
+        if ip_data.get("status") == "success":
+            location = f"{ip_data.get('city')}, {ip_data.get('country')}"
+    except:
+        pass
+
+    time_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    subject = "🚨 New Login Detected - NEX CLOUD"
+    html_content = f"""
+    <html>
+      <body style="font-family: Arial, sans-serif; background-color: #f4f4f9; padding: 20px;">
+        <div style="max-width: 500px; margin: auto; background: white; padding: 30px; border-radius: 10px; border-top: 5px solid #f44336; box-shadow: 0px 4px 10px rgba(0,0,0,0.1);">
+          <h3 style="color: #f44336; text-align: center;">Security Alert: New Login</h3>
+          <p>Hello <b>{username}</b>,</p>
+          <p>A successful login was just detected on your account.</p>
+          <ul style="background: #eee; padding: 15px; border-radius: 5px; list-style-type: none;">
+              <li><b>Time:</b> {time_now}</li>
+              <li><b>IP Address:</b> {ip_address}</li>
+              <li><b>Location:</b> {location}</li>
+          </ul>
+          <p style="color: #777; font-size: 13px;">If this wasn't you, please change your password immediately!</p>
+        </div>
+      </body>
+    </html>
+    """
+    _send_email_smtp(receiver_email, subject, html_content, "Cloud Security")
+
+def _send_email_smtp(receiver_email: str, subject: str, html_content: str, from_name: str):
+    """Smtplib Helper function taaki code repeat na ho"""
+    sender_email = os.getenv("SENDER_EMAIL")
+    sender_password = os.getenv("SENDER_PASSWORD")
+    if not sender_email or not sender_password: return
+    
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"] = f"Cloud Security <{sender_email}>"
+    msg["From"] = f"{from_name} <{sender_email}>"
     msg["To"] = receiver_email
     msg.attach(MIMEText(html_content, "html"))
-
     try:
         server = smtplib.SMTP("smtp.gmail.com", 587)
         server.starttls()
@@ -161,7 +196,6 @@ def send_reset_otp_email(receiver_email: str, username: str, otp: int):
         server.quit()
     except Exception as e:
         print(f"🚨 [EMAIL FAILED] {str(e)}")
-
 
 # ==========================================
 # 📥 PAYLOAD MODELS
@@ -227,7 +261,7 @@ async def register_user(payload: RegisterPayload, background_tasks: BackgroundTa
 # 2. VERIFY OTP & CREATE ACCOUNT
 # ==========================================
 @router.post("/verify-otp")
-async def verify_otp(payload: VerifyOTPPayload):
+async def verify_otp(payload: VerifyOTPPayload, background_tasks: BackgroundTasks):
     clean_email_address = sanitize_email(payload.email)
 
     if clean_email_address not in TEMP_OTP_STORE:
@@ -248,15 +282,19 @@ async def verify_otp(payload: VerifyOTPPayload):
     }
     
     await create_user(new_user)
+    
+    # 🎉 SUCCESS: Welcome Email Background mein bhej do
+    background_tasks.add_task(send_welcome_email, clean_email_address, stored_data["username"])
+    
     del TEMP_OTP_STORE[clean_email_address]
 
     return {"status": "success", "message": f"Account created successfully! Welcome {stored_data['username']} 🚀"}
 
 # ==========================================
-# 3. LOGIN ENDPOINT (With Turnstile Lock)
+# 3. LOGIN ENDPOINT (With Turnstile Lock & Alert)
 # ==========================================
 @router.post("/login")
-async def login_user(payload: LoginPayload):
+async def login_user(payload: LoginPayload, request: Request, background_tasks: BackgroundTasks):
 
     # 🤖 Step 0: VERIFY CAPTCHA FIRST!
     is_human = await verify_turnstile(payload.captcha_token)
@@ -272,6 +310,10 @@ async def login_user(payload: LoginPayload):
 
     if user["password"] != provided_hash:
         raise HTTPException(status_code=401, detail="Incorrect Password!")
+
+    # 🚨 SECURITY ALERT: Login detect hua, email bhej do
+    client_ip = request.client.host if request.client else "Unknown IP"
+    background_tasks.add_task(send_login_alert, user["email"], payload.username, client_ip)
 
     return {"status": "success", "message": "Login successful! Welcome back.", "api_key": user["api_key"]}
 
@@ -312,3 +354,4 @@ async def reset_password(payload: ResetPasswordPayload):
     del TEMP_OTP_STORE[store_key]
 
     return {"status": "success", "message": "✅ Password has been reset successfully! You can now login with your new password."}
+    
