@@ -12,11 +12,16 @@ if not MONGO_URI:
 # Async MongoDB Connection
 client = AsyncIOMotorClient(MONGO_URI)
 
-# Database ka naam (Tu kuch bhi rakh sakta hai, jaise "CloudEngineDB")
+# Database ka naam
 db = client["CloudEngineDB"]
 
-# Collections (Tables)
+# ==========================================
+# 📦 COLLECTIONS (Tables)
+# ==========================================
 users_collection = db["users"]
 deploys_collection = db["deploys"]
 
-print("✅ [DB] MongoDB Database connection initialized!")
+# 🔥 Naya Collection Support Tickets ke liye
+tickets_collection = db["tickets"] 
+
+print("✅ [DB] MongoDB Database connection initialized and collections mapped!")
