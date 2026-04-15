@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 # 📦 IMPORTING ALL ROUTERS & MODULES
 # ==========================================
 from CLOUDSERVER.auth import auth_api
-from CLOUDSERVER.apis import deploy, restart, status, ping, env_manager
+from CLOUDSERVER.apis import deploy, restart, status, ping, env_manager, services
 
 # Note: Jaise hi app start hoga, database connection file (database.py) 
 # background mein apne aap trigger ho jayegi in imports ke through!
@@ -41,6 +41,9 @@ app.include_router(restart.router, prefix="/api", tags=["Process Management"])
 app.include_router(status.router, prefix="/api", tags=["System Status"])
 app.include_router(ping.router, prefix="/api", tags=["Health & Uptime"])
 app.include_router(env_manager.router, prefix="/api", tags=["Environment Variables"])
+
+# 3. User Dashboard Data (Naya Add Hua Hai 🚀)
+app.include_router(services.router, prefix="/api", tags=["User Services Dashboard"])
 
 
 # ==========================================
