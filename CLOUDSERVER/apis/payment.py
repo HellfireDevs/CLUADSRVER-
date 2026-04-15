@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 import httpx # 🚀 CHANGED: requests to httpx for async operation
 
 from CLOUDSERVER.database.user import get_user_by_username, update_user_premium
+from CLOUDSERVER.database.database import tickets_collection # 🚨 NAYA IMPORT SUPPORT KE LIYE
 from CLOUDSERVER.auth.verify import verify_api_key
 
 router = APIRouter()
@@ -17,19 +18,30 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_ADMIN_ID = os.getenv("TELEGRAM_ADMIN_ID")
 
 # ==========================================
-# 📧 PREMIUM ACTIVATION EMAIL TEMPLATE
+# 📧 EMAIL HELPERS
 # ==========================================
-def send_premium_success_email(receiver_email: str, username: str, duration_days: int):
+def send_email_helper(receiver_email: str, subject: str, html_content: str):
     sender_email = os.getenv("SENDER_EMAIL")
     sender_password = os.getenv("SENDER_PASSWORD")
+    if not sender_email or not sender_password: return
+    
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = f"NEX Cloud <{sender_email}>"
+    msg["To"] = receiver_email
+    msg.attach(MIMEText(html_content, "html"))
+    
+    try:
+        server = smtplib.SMTP("smtp.gmail.com", 587)
+        server.starttls()
+        server.login(sender_email, sender_password)
+        server.sendmail(sender_email, receiver_email, msg.as_string())
+        server.quit()
+    except Exception as e:
+        print(f"🚨 [EMAIL FAILED] {str(e)}")
 
-    if not sender_email or not sender_password:
-        print("🚨 Email credentials missing in .env")
-        return
-
-    subject = "👑 Welcome to NEX CLOUD Premium!"
+def send_premium_success_email(receiver_email: str, username: str, duration_days: int):
     expiry_date = (datetime.now() + timedelta(days=duration_days)).strftime("%d %B, %Y")
-
     html_content = f"""
     <html>
       <body style="font-family: Arial, sans-serif; background-color: #050505; color: white; padding: 20px;">
@@ -49,49 +61,32 @@ def send_premium_success_email(receiver_email: str, username: str, duration_days
       </body>
     </html>
     """
-
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = f"NEX Billing <{sender_email}>"
-    msg["To"] = receiver_email
-    msg.attach(MIMEText(html_content, "html"))
-
-    try:
-        server = smtplib.SMTP("smtp.gmail.com", 587)
-        server.starttls()
-        server.login(sender_email, sender_password)
-        server.sendmail(sender_email, receiver_email, msg.as_string())
-        server.quit()
-        print(f"✅ Premium success email sent to {receiver_email}")
-    except Exception as e:
-        print(f"🚨 [EMAIL FAILED] {str(e)}")
+    send_email_helper(receiver_email, "👑 Welcome to NEX CLOUD Premium!", html_content)
 
 
 # ==========================================
-# 📥 PAYLOAD MODELS (Updated to match Frontend)
+# 📥 PAYLOAD MODELS 
 # ==========================================
 class CouponPayload(BaseModel):
-    code: str  # 🛠️ FIXED: Matched frontend key
+    code: str  
 
 class PaymentSubmitPayload(BaseModel):
-    transaction_id: str # 🛠️ FIXED: Matched frontend key
-    amount: float       # 🛠️ FIXED: Matched frontend key
-    plan: str           # 🛠️ FIXED: Matched frontend key
+    transaction_id: str 
+    amount: float       
+    plan: str           
     coupon_used: Optional[str] = None
 
 
 # ==========================================
 # 1. VERIFY COUPON API
 # ==========================================
-@router.post("/verify-coupon") # 🛠️ FIXED: Endpoint name matches frontend
+@router.post("/verify-coupon") 
 async def verify_coupon(payload: CouponPayload, current_user: str = Depends(verify_api_key)):
-    # 📝 Yahan DB se coupon check hoga (Dummy logic for now)
-    # coupon = await get_coupon_by_code(payload.code)
-    
     # Dummy Coupon Validation
     valid_coupons = {
         "NEXFREE": {"discount_percentage": 100},
-        "BHAICHARA": {"discount_percentage": 50}
+        "BHAICHARA": {"discount_percentage": 50},
+        "TANNU@1289": {"discount_percentage": 100} # 🔥 TERA SPECIAL COUPON ADDED
     }
     
     if payload.code.upper() in valid_coupons:
@@ -109,13 +104,11 @@ async def verify_coupon(payload: CouponPayload, current_user: str = Depends(veri
 @router.post("/submit-payment")
 async def submit_payment(payload: PaymentSubmitPayload, current_user: str = Depends(verify_api_key)):
     
-    # Helper to extract months from string like "NEX Premium 1 Month"
-    plan_months = 1 # Default
+    plan_months = 1 
     if "1" in payload.plan: plan_months = 1
     elif "6" in payload.plan: plan_months = 6
     elif "12" in payload.plan: plan_months = 12
 
-    # 1. Prepare Message for Telegram Admin
     msg_text = (
         f"🚨 <b>NEW PAYMENT PENDING</b> 🚨\n\n"
         f"👤 <b>User:</b> <code>{current_user}</code>\n"
@@ -137,7 +130,6 @@ async def submit_payment(payload: PaymentSubmitPayload, current_user: str = Depe
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     
-    # 🚀 CHANGED: Using httpx instead of requests
     async with httpx.AsyncClient() as client:
         response = await client.post(url, json={
             "chat_id": TELEGRAM_ADMIN_ID,
@@ -149,17 +141,17 @@ async def submit_payment(payload: PaymentSubmitPayload, current_user: str = Depe
     if response.status_code == 200:
         return {"status": "success", "message": "✅ Payment details submitted for manual verification."}
     else:
-        print(f"🚨 Telegram API Error: {response.text}")
         raise HTTPException(status_code=500, detail="Failed to notify admin. Check Bot Token.")
 
 
 # ==========================================
-# 3. TELEGRAM WEBHOOK (Admin Action)
+# 3. TELEGRAM WEBHOOK (Admin Action & Support Reply)
 # ==========================================
 @router.post("/tg-webhook")
 async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
     data = await request.json()
     
+    # --- SCENARIO A: PAYMENT BUTTON CLICKED ---
     if "callback_query" in data:
         callback_id = data["callback_query"]["id"]
         chat_id = data["callback_query"]["message"]["chat"]["id"]
@@ -176,15 +168,12 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 plan_months = int(extra_data)
                 duration_days = plan_months * 30
                 
-                # 1. Update Database
                 await update_user_premium(username, is_premium=True, days=duration_days)
                 
-                # 2. Send Email
                 user_info = await get_user_by_username(username)
                 if user_info and "email" in user_info:
                     background_tasks.add_task(send_premium_success_email, user_info["email"], username, duration_days)
 
-                # 3. Update TG Message
                 await client.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText", json={
                     "chat_id": chat_id,
                     "message_id": message_id,
@@ -198,11 +187,59 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                     "text": f"❌ Payment REJECTED for {username} (Txn: {extra_data})."
                 })
 
-            # Answer callback
             await client.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery", json={
                 "callback_query_id": callback_id,
                 "text": "Action Successful!"
             })
 
+    # --- SCENARIO B: ADMIN REPLIES TO A SUPPORT TICKET ---
+    if "message" in data and "reply_to_message" in data["message"]:
+        admin_reply = data["message"].get("text", "")
+        reply_to_id = data["message"]["reply_to_message"]["message_id"]
+        chat_id = data["message"]["chat"]["id"]
+        
+        if str(chat_id) == str(TELEGRAM_ADMIN_ID) and admin_reply:
+            # Check if this reply is to a ticket
+            ticket = await tickets_collection.find_one({"tg_message_id": reply_to_id})
+            
+            if ticket:
+                await tickets_collection.update_one(
+                    {"_id": ticket["_id"]},
+                    {"$set": {"status": "Answered", "admin_reply": admin_reply}}
+                )
+                
+                username = ticket["owner"]
+                ticket_id = ticket["ticket_id"]
+                
+                user_info = await get_user_by_username(username)
+                if user_info and "email" in user_info:
+                    frontend_url = "https://cluadwebsite.vercel.app/support"
+                    
+                    html_content = f"""
+                    <div style="font-family: Arial; background: #050505; color: white; padding: 20px;">
+                        <div style="max-width: 500px; margin: auto; background: #0a0a0a; padding: 30px; border-radius: 15px; border-top: 4px solid #a855f7;">
+                            <h2 style="color: #a855f7;">Support Ticket Updated 🎫</h2>
+                            <p>Hello <b>{username}</b>,</p>
+                            <p>An admin has replied to your ticket (<b>{ticket_id}</b>):</p>
+                            
+                            <div style="background: #111; padding: 15px; border-left: 3px solid #a855f7; margin: 20px 0; font-style: italic;">
+                                "{admin_reply}"
+                            </div>
+                            
+                            <a href="{frontend_url}" style="display: inline-block; padding: 12px 24px; background: #a855f7; color: white; text-decoration: none; border-radius: 8px; font-weight: bold; margin-top: 10px;">
+                                View Ticket on Dashboard
+                            </a>
+                        </div>
+                    </div>
+                    """
+                    background_tasks.add_task(send_email_helper, user_info["email"], f"Update on Ticket {ticket_id}", html_content)
+                
+                async with httpx.AsyncClient() as client:
+                    await client.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={
+                        "chat_id": TELEGRAM_ADMIN_ID,
+                        "text": f"✅ Reply sent to {username} for Ticket {ticket_id}!",
+                        "reply_to_message_id": data["message"]["message_id"]
+                    })
+
     return {"status": "ok"}
-    
+                    
