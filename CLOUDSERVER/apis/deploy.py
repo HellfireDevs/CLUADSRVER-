@@ -2,53 +2,140 @@ from fastapi import APIRouter, BackgroundTasks, Header, Request, HTTPException, 
 from pydantic import BaseModel
 from typing import Optional
 import os
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 # Server Level Tools
-from CLOUDSERVER.core_utils.server_ops import pull_latest_code, restart_pm2, check_pm2_exists
+from CLOUDSERVER.core_utils.server_ops import pull_latest_code, restart_pm2, check_pm2_exists, stop_pm2, install_requirements
 
-# 🚀 Naya MongoDB Database Imports
-from CLOUDSERVER.database.deploys import register_new_bot, get_bot_by_repo, check_pm2_name_in_db
+# 🚀 MongoDB Database Imports
+from CLOUDSERVER.database.deploys import register_new_bot, get_bot_by_repo, check_pm2_name_in_db, get_bot_by_name
+from CLOUDSERVER.database.user import get_user_by_username # 📧 User ka email nikalne ke liye
 
-# 🛡️ Security Import (Owner pehchanne ke liye)
+# 🛡️ Security Import
 from CLOUDSERVER.auth.verify import verify_api_key
 
 router = APIRouter()
 
 # ==========================================
-# 📥 USER INPUT PAYLOAD FORMAT (UPDATED)
+# 📧 EMAIL NOTIFICATION ENGINE
 # ==========================================
-class NewDeployPayload(BaseModel):
-    repo_url: str       # GitHub ka poora link (e.g., "https://github.com/HellfireDevs/YUKIMUSICS.git")
-    repo_name: str      # Sirf repo ka naam webhook ke liye (e.g., "YUKIMUSICS")
-    app_name: str       # PM2/Docker ka unique naam (e.g., "user1_bot")
-    folder_path: str    # VPS mein kahan code rakha hai
-    use_docker: bool = False      # Default: PM2 use karega
-    start_cmd: Optional[str] = None # Docker ke liye Optional, PM2 ke liye Required
+def send_deployment_email(receiver_email: str, app_name: str, status: str, error_msg: str = ""):
+    sender_email = os.getenv("SENDER_EMAIL")
+    sender_password = os.getenv("SENDER_PASSWORD")
+
+    if not sender_email or not sender_password:
+        print("🚨 Email credentials missing in .env")
+        return
+
+    msg = MIMEMultipart("alternative")
+    
+    if status == "success":
+        msg["Subject"] = f"✅ Deployment Success: {app_name}"
+        html_content = f"""
+        <div style="font-family: Arial; padding: 20px; background: #f4f4f9;">
+            <div style="max-width: 500px; margin: auto; background: white; padding: 30px; border-radius: 10px; border-top: 5px solid #4CAF50;">
+                <h2 style="color: #4CAF50;">System Online! 🚀</h2>
+                <p>Your application <b>{app_name}</b> has been successfully deployed and is now running on NEX CLOUD.</p>
+                <a href="https://cluadwebsite.vercel.app/dashboard" style="display: inline-block; padding: 10px 20px; background: #8a2be2; color: white; text-decoration: none; border-radius: 5px; margin-top: 20px;">Go to Dashboard</a>
+            </div>
+        </div>
+        """
+    else:
+        msg["Subject"] = f"❌ Deployment Failed: {app_name}"
+        html_content = f"""
+        <div style="font-family: Arial; padding: 20px; background: #f4f4f9;">
+            <div style="max-width: 500px; margin: auto; background: white; padding: 30px; border-radius: 10px; border-top: 5px solid #f44336;">
+                <h2 style="color: #f44336;">Deployment Crashed 🚨</h2>
+                <p>Your application <b>{app_name}</b> failed to start or crashed during deployment.</p>
+                <p style="background: #eee; padding: 10px; font-family: monospace; color: #d32f2f;">Error: {error_msg}</p>
+                <a href="https://cluadwebsite.vercel.app" style="display: inline-block; padding: 10px 20px; background: #f44336; color: white; text-decoration: none; border-radius: 5px; margin-top: 20px;">View Live Error Logs</a>
+            </div>
+        </div>
+        """
+
+    msg["From"] = f"NEX Cloud <{sender_email}>"
+    msg["To"] = receiver_email
+    msg.attach(MIMEText(html_content, "html"))
+
+    try:
+        server = smtplib.SMTP("smtp.gmail.com", 587)
+        server.starttls()
+        server.login(sender_email, sender_password)
+        server.sendmail(sender_email, receiver_email, msg.as_string())
+        server.quit()
+    except Exception as e:
+        print(f"🚨 [EMAIL FAILED] {str(e)}")
+
 
 # ==========================================
-# 1. NEW DEPLOYMENT API (Secure + MongoDB)
+# 📥 PAYLOAD MODELS
+# ==========================================
+class NewDeployPayload(BaseModel):
+    repo_url: str       
+    repo_name: str      
+    app_name: str       
+    folder_path: str    
+    use_docker: bool = False      
+    start_cmd: Optional[str] = None 
+
+class ActionPayload(BaseModel):
+    app_name: str
+    action: str # "start", "stop", "restart", "reset"
+
+# ==========================================
+# ⚙️ BACKGROUND DEPLOYMENT ENGINE
+# ==========================================
+async def run_background_update(repo_path: str, pm2_name: str, repo_url: str, use_docker: bool, start_cmd: str, owner: str, is_reset: bool = False):
+    """Background engine jo Code Pull karega, Requirements install karega, aur Deploy marega"""
+    print(f"🚀 [DEPLOY ENGINE] Initializing for {pm2_name}...")
+    
+    user_info = await get_user_by_username(owner)
+    user_email = user_info["email"] if user_info else None
+
+    try:
+        # Step 1: Smart pull code from GitHub
+        pull_latest_code(repo_path, repo_url)
+        
+        # Step 2: Agar Reset/Redeploy hai, ya naya bot hai, toh requirements download karo
+        if not use_docker and is_reset:
+            print(f"📦 [DEPLOY ENGINE] Installing dependencies for {pm2_name}...")
+            install_requirements(repo_path) # Ye function tujhe server_ops.py me banana hoga (pip install -r requirements.txt)
+
+        # Step 3: PM2 ya Docker Start
+        restart_pm2(pm2_name, repo_path, use_docker, start_cmd)
+        
+        print(f"🔥 [DEPLOY ENGINE] 100% DONE! {pm2_name} is LIVE.")
+        
+        if user_email:
+            send_deployment_email(user_email, pm2_name, "success")
+            
+    except Exception as e:
+        error_msg = str(e)
+        print(f"🚨 [DEPLOY CRASH] {error_msg}")
+        if user_email:
+            send_deployment_email(user_email, pm2_name, "failed", error_msg)
+
+# ==========================================
+# 1. NEW DEPLOYMENT API
 # ==========================================
 @router.post("/deploy-new")
 async def create_new_deployment(
     payload: NewDeployPayload,
-    current_user: str = Depends(verify_api_key) # 🔐 API key check karke Owner ka naam (username) aayega
+    background_tasks: BackgroundTasks,
+    current_user: str = Depends(verify_api_key) 
 ):
-    """
-    Jab user apni website se naya bot setup karega toh ye API hit hogi.
-    """
-    # 🚨 CHECK 0: Agar Docker nahi hai, toh start_cmd zaroori hai
     if not payload.use_docker and not payload.start_cmd:
-        raise HTTPException(status_code=400, detail="❌ Bhai, PM2 ke liye start_cmd toh bhej (e.g., 'python3 main.py')!")
+        raise HTTPException(status_code=400, detail="❌ Bhai, PM2 ke liye start_cmd toh bhej!")
 
-    # 🚨 CHECK 1: PM2 Duplicate Name Checker (Server aur Database dono mein check karega)
-    # Docker use kar raha hai toh pm2 list mein check skip kar sakte hain, par DB mein uniqueness zaroori hai
     if not payload.use_docker and check_pm2_exists(payload.app_name):
         raise HTTPException(status_code=400, detail=f"❌ App Name '{payload.app_name}' server pe pehle se taken hai!")
         
     if await check_pm2_name_in_db(payload.app_name):
-        raise HTTPException(status_code=400, detail=f"❌ App Name '{payload.app_name}' database mein pehle se taken hai. Koi aur naam choose kar!")
+        raise HTTPException(status_code=400, detail=f"❌ App Name '{payload.app_name}' database mein pehle se taken hai!")
 
-    # 💾 CHECK 2: MongoDB mein User (Owner) ke naam ke sath save karna
+    # Save to Database
     bot_data = {
         "repo_url": payload.repo_url,    
         "repo_name": payload.repo_name,  
@@ -58,71 +145,72 @@ async def create_new_deployment(
         "start_cmd": payload.start_cmd,
         "owner": current_user  
     }
-    
     await register_new_bot(bot_data)
 
-    return {
-        "status": "success",
-        "message": f"✅ Bot '{payload.app_name}' successfully registered for {current_user}! Ab tum webhook ya deploy hit kar sakte ho."
-    }
+    # Naya bot direct deploy pe laga do (First Time Install = True)
+    background_tasks.add_task(
+        run_background_update, 
+        payload.folder_path, payload.app_name, payload.repo_url, 
+        payload.use_docker, payload.start_cmd, current_user, True
+    )
+
+    return {"status": "success", "message": f"✅ Bot '{payload.app_name}' registered! Deployment started in background."}
 
 # ==========================================
-# 2. GITHUB WEBHOOK API (For Auto-Updates)
+# 2. GITHUB WEBHOOK API
 # ==========================================
-def run_background_update(repo_path: str, pm2_name: str, repo_url: str, use_docker: bool, start_cmd: str):
-    """Background engine jo Code Pull karega aur Smart Restart/Deploy marega"""
-    print(f"🚀 [UPDATE] Updating code for {pm2_name}...")
-    try:
-        # Smart pull (init + fetch bypass logic use karega)
-        pull_latest_code(repo_path, repo_url)
-        # Naya master engine: PM2 vs Docker handle karega
-        restart_pm2(pm2_name, repo_path, use_docker, start_cmd)
-        print(f"🔥 [UPDATE] 100% DONE! {pm2_name} is successfully updated and running.")
-    except Exception as e:
-        print(f"🚨 [UPDATE CRASH] {str(e)}")
-
 @router.post("/webhook")
-async def github_webhook(
-    request: Request, 
-    background_tasks: BackgroundTasks, 
-    x_github_event: str = Header(None)
-):
-    """
-    GitHub ispe hit karega code push hone ke baad.
-    """
-    if x_github_event == "ping":
-        return {"status": "success", "message": "GitHub Webhook Connected!"}
-    
-    if x_github_event != "push":
-        return {"status": "ignored"}
+async def github_webhook(request: Request, background_tasks: BackgroundTasks, x_github_event: str = Header(None)):
+    if x_github_event == "ping": return {"status": "success", "message": "Webhook Connected!"}
+    if x_github_event != "push": return {"status": "ignored"}
 
     try:
         payload = await request.json()
-        
-        # 🚨 Webhook sirf "YUKIMUSICS" jaisa naam bhejta hai
         incoming_repo_name = payload.get("repository", {}).get("name")
-        
-        if not incoming_repo_name:
-            return {"status": "ignored", "message": "Repository name not found in payload."}
+        if not incoming_repo_name: return {"status": "ignored"}
 
-        # 🔍 MongoDB mein Repo check karo
         bot_info = await get_bot_by_repo(incoming_repo_name)
-        
-        if not bot_info:
-            return {"status": "ignored", "message": f"Repo '{incoming_repo_name}' server pe registered nahi hai."}
+        if not bot_info: return {"status": "ignored"}
             
-        # Background task trigger kar do naye parameters ke sath
         background_tasks.add_task(
             run_background_update, 
-            bot_info["folder_path"], 
-            bot_info["pm2_name"],
-            bot_info.get("repo_url"),
-            bot_info.get("use_docker", False),
-            bot_info.get("start_cmd")
+            bot_info["folder_path"], bot_info["pm2_name"], bot_info.get("repo_url"),
+            bot_info.get("use_docker", False), bot_info.get("start_cmd"), bot_info["owner"], False
         )
-        
-        return {"status": "success", "message": f"Update triggered for {bot_info['pm2_name']}!"}
+        return {"status": "success", "message": f"Auto-Update triggered for {bot_info['pm2_name']}!"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==========================================
+# 3. DASHBOARD CONTROLS (Stop, Restart, Reset)
+# ==========================================
+@router.post("/action")
+async def bot_actions(payload: ActionPayload, background_tasks: BackgroundTasks, current_user: str = Depends(verify_api_key)):
+    bot_info = await get_bot_by_name(payload.app_name) # Naya function DB mein banaiyo
     
+    if not bot_info or bot_info["owner"] != current_user:
+        raise HTTPException(status_code=403, detail="Unauthorized or Bot not found!")
+
+    try:
+        if payload.action == "stop":
+            stop_pm2(payload.app_name)
+            return {"status": "success", "message": "Bot Stopped!"}
+            
+        elif payload.action == "restart":
+            restart_pm2(payload.app_name, bot_info["folder_path"], bot_info.get("use_docker"), bot_info.get("start_cmd"))
+            return {"status": "success", "message": "Bot Restarted!"}
+            
+        elif payload.action == "reset":
+            # Pura code dubara pull karega aur requirements wapas install karega
+            background_tasks.add_task(
+                run_background_update, 
+                bot_info["folder_path"], bot_info["pm2_name"], bot_info.get("repo_url"),
+                bot_info.get("use_docker"), bot_info.get("start_cmd"), current_user, True
+            )
+            return {"status": "success", "message": "Reset & Redeploy initiated!"}
+        else:
+            raise HTTPException(status_code=400, detail="Invalid action")
+            
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
         
