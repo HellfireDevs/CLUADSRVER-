@@ -1,11 +1,12 @@
 import os
+import shutil
+import subprocess
 import smtplib
 import random
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel
-from passlib.context import CryptContext
 
 # Tere DB aur Auth Imports
 from CLOUDSERVER.database.database import users_collection, deploys_collection
@@ -13,7 +14,6 @@ from CLOUDSERVER.database.user import get_user_by_username
 from CLOUDSERVER.auth.verify import verify_api_key
 
 router = APIRouter()
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # ==========================================
 # 📧 EMAIL TEMPLATES (OTP & GOODBYE)
@@ -63,30 +63,23 @@ def send_goodbye_email(email: str, username: str):
 # ==========================================
 # 📥 PAYLOAD MODELS
 # ==========================================
-class DeleteRequestPayload(BaseModel):
-    password: str
-
 class DeleteConfirmPayload(BaseModel):
     otp: str
 
 # ==========================================
 # 🛑 API: STEP 1 - REQUEST DELETION (Generates OTP)
 # ==========================================
-@router.post("/request-delete")
-async def request_account_deletion(payload: DeleteRequestPayload, background_tasks: BackgroundTasks, current_user: str = Depends(verify_api_key)):
+@router.post("/request-delete-otp")
+async def request_account_deletion(background_tasks: BackgroundTasks, current_user: str = Depends(verify_api_key)):
     user = await get_user_by_username(current_user)
     
-    # 1. Verify Password
-    if not pwd_context.verify(payload.password, user["password"]):
-        raise HTTPException(status_code=400, detail="❌ Incorrect Password!")
-
-    # 2. Generate 6-digit OTP
+    # 1. Generate 6-digit OTP
     otp = str(random.randint(100000, 999999))
     
-    # 3. Save OTP in User DB Document
+    # 2. Save OTP in User DB Document
     await users_collection.update_one({"username": current_user}, {"$set": {"delete_otp": otp}})
     
-    # 4. Send Email in Background
+    # 3. Send Email in Background
     if "email" in user:
         background_tasks.add_task(send_otp_email, user["email"], current_user, otp)
         
@@ -103,15 +96,31 @@ async def confirm_account_deletion(payload: DeleteConfirmPayload, background_tas
     if user.get("delete_otp") != payload.otp:
         raise HTTPException(status_code=400, detail="❌ Invalid or Expired OTP!")
 
-    # 2. 💣 NUKE EVERYTHING FROM DATABASE
+    # 🔥 NEW: 2. VPS SE BHI KACHRA SAAF KARO (PM2 & Folders)
+    # User ke saare bots nikalo aur unhe server se delete karo
+    user_bots = await deploys_collection.find({"owner": current_user}).to_list(length=100)
+    for bot in user_bots:
+        app_name = bot.get("pm2_name")
+        folder_path = bot.get("folder_path")
+        
+        # PM2 aur Docker se remove karo
+        if app_name:
+            subprocess.run(["pm2", "delete", app_name], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+            subprocess.run(["docker", "rm", "-f", app_name.lower()], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+        
+        # Hard Drive se folder uda do
+        if folder_path and os.path.exists(folder_path):
+            shutil.rmtree(folder_path, ignore_errors=True)
+
+    # 3. 💣 NUKE EVERYTHING FROM DATABASE
     # Remove all deployed bots belonging to user
     await deploys_collection.delete_many({"owner": current_user})
     # Remove user account
     await users_collection.delete_one({"username": current_user})
 
-    # 3. Send Goodbye Email
+    # 4. Send Goodbye Email
     if "email" in user:
         background_tasks.add_task(send_goodbye_email, user["email"], current_user)
 
     return {"status": "success", "message": "💥 Account and all services deleted permanently."}
-
+    
