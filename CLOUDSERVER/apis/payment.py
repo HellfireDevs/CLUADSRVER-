@@ -12,6 +12,9 @@ from CLOUDSERVER.database.user import get_user_by_username, update_user_premium
 from CLOUDSERVER.database.database import tickets_collection # 🚨 NAYA IMPORT SUPPORT KE LIYE
 from CLOUDSERVER.auth.verify import verify_api_key
 
+# 🚀 NAYA IMPORT TRANSACTION HISTORY KE LIYE
+from CLOUDSERVER.database.payment import get_user_transaction_history
+
 router = APIRouter()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -242,4 +245,32 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                     })
 
     return {"status": "ok"}
+
+# ==========================================
+# 4. 💸 GET TRANSACTION HISTORY
+# ==========================================
+@router.get("/transaction-history")
+async def transaction_history(current_user: str = Depends(verify_api_key)):
+    """
+    User apne API key se request bhejega aur ye usko uski saari history de dega.
+    """
+    try:
+        history = await get_user_transaction_history(current_user)
+        
+        if not history:
+            return {
+                "status": "success",
+                "message": "No transactions found.",
+                "transactions": []
+            }
+            
+        return {
+            "status": "success",
+            "message": "Transaction history fetched successfully.",
+            "total_transactions": len(history),
+            "transactions": history
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch history: {str(e)}")
                     
