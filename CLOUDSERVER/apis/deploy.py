@@ -234,3 +234,37 @@ async def bot_actions(payload: ActionPayload, background_tasks: BackgroundTasks,
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
         
+# ==========================================
+# 🛠️ EDIT POINTS (DB Update Functions)
+# ==========================================
+async def update_bot_repo_details(app_name: str, new_repo_url: str, new_start_cmd: str, new_repo_name: str):
+    """User agar Repo URL ya Start Command change karta hai toh ye DB update karega"""
+    from CLOUDSERVER.database.database import deploys_collection
+    
+    result = await deploys_collection.update_one(
+        {"pm2_name": app_name},
+        {"$set": {
+            "repo_url": new_repo_url,
+            "repo_name": new_repo_name,
+            "start_cmd": new_start_cmd
+        }}
+    )
+    return result.modified_count > 0
+
+async def update_bot_env_vars(app_name: str, env_data: dict):
+    """MongoDB mein bhi env variables ka backup rakhenge taaki Frontend pe show ho sakein"""
+    from CLOUDSERVER.database.database import deploys_collection
+    
+    result = await deploys_collection.update_one(
+        {"pm2_name": app_name},
+        {"$set": {"env_vars": env_data}}
+    )
+    return result.modified_count > 0
+    
+async def delete_bot_from_db(app_name: str):
+    """MongoDB se bot ka record hamesha ke liye delete kar dega"""
+    from CLOUDSERVER.database.database import deploys_collection
+    
+    result = await deploys_collection.delete_one({"pm2_name": app_name})
+    return result.deleted_count > 0
+    
