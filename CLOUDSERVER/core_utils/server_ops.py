@@ -3,7 +3,7 @@ import os
 import json
 
 # ==========================================
-# 1. PM2 DUPLICATE CHECKER & STOPPER
+# 1. PM2 OPERATIONS (Check, Stop, Flush)
 # ==========================================
 def check_pm2_exists(app_name: str) -> bool:
     """Check karega ki PM2 mein ye naam pehle se toh nahi chal raha"""
@@ -32,12 +32,23 @@ def stop_pm2(app_name: str):
     except Exception as e:
         print(f"❌ [PM2 STOP ERROR]: {str(e)}")
 
+# 🔥 NAYA: Clear Logs ka Engine
+def clear_pm2_logs(app_name: str):
+    """PM2 ke logs clear karne ke liye (Flush) taaki server fast rahe"""
+    print(f"🧹 [PM2] Flushing logs for bot: {app_name}...")
+    try:
+        subprocess.run(["pm2", "flush", app_name], check=False)
+        print(f"✅ [PM2] Logs cleared successfully for {app_name}.")
+        return True
+    except Exception as e:
+        print(f"❌ [PM2 FLUSH ERROR]: {str(e)}")
+        return False
 
 # ==========================================
 # 2. SMART GIT ENGINE (Init + Fetch + Reset + Clean + VENV)
 # ==========================================
 def install_requirements(folder_path: str):
-    """VENV ke andar specific requirements install karne ke liye (Reset ke time kaam ayega)"""
+    """VENV ke andar specific requirements install karne ke liye"""
     venv_path = os.path.join(folder_path, "venv")
     pip_path = os.path.join(venv_path, "bin", "pip")
     
@@ -77,6 +88,12 @@ def pull_latest_code(repo_path: str, repo_url: str = None):
             print("✅ [GIT] Successfully pulled code into the folder!")
         else:
             print(f"📥 [GIT] Updating existing code in {repo_path}...")
+            
+            # 🔥 PRIVATE REPO FIX: Har baar pull se pehle Naya Token URL force set karo!
+            if repo_url:
+                print("🔐 [GIT] Updating remote URL for seamless authentication...")
+                subprocess.run(["git", "remote", "set-url", "origin", repo_url], cwd=repo_path, check=True)
+            
             subprocess.run(["git", "fetch", "--all"], cwd=repo_path, check=True)
             
             # 💣 GUNDA LOGIC: Force clean untracked garbage before reset!
@@ -116,7 +133,7 @@ def restart_pm2(app_name: str, folder_path: str, use_docker: bool = False, start
     
     try:
         if use_docker:
-            # 🐳 DOCKER LOWERCASE FIX: Uppercase names se build crash hota tha, ab nahi hoga!
+            # 🐳 DOCKER LOWERCASE FIX
             docker_app_name = app_name.lower()
             print(f"🐳 [DOCKER] Building image for {docker_app_name}...")
             subprocess.run(["docker", "build", "-t", docker_app_name, "."], cwd=folder_path, check=True)
@@ -140,19 +157,15 @@ def restart_pm2(app_name: str, folder_path: str, use_docker: bool = False, start
                 if start_cmd.startswith("python3 ") or start_cmd.startswith("python "):
                     venv_python = os.path.join(folder_path, "venv", "bin", "python")
                     
-                    # 'python3 -m bot' ko '/.../venv/bin/python -m bot' bana dega
                     if start_cmd.startswith("python3 "):
                         start_cmd = start_cmd.replace("python3 ", f"{venv_python} ", 1)
                     else:
                         start_cmd = start_cmd.replace("python ", f"{venv_python} ", 1)
                     
                     print(f"🔥 [PM2] Starting newly with Full VENV CMD: {start_cmd}")
-                    
-                    # Pura command single quotes mein dalenge taaki PM2 usko as a script command treat kare
                     cmd = f"pm2 start '{start_cmd}' --name {app_name}"
                     subprocess.run(cmd, shell=True, cwd=folder_path, check=True)
                 else:
-                    # Agar nodejs ya bash script ho
                     print(f"🔥 [PM2] Starting newly with CMD: {start_cmd}")
                     cmd = f"pm2 start '{start_cmd}' --name {app_name}"
                     subprocess.run(cmd, shell=True, cwd=folder_path, check=True)
