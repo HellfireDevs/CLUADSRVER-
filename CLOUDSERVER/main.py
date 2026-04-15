@@ -5,8 +5,8 @@ from fastapi.middleware.cors import CORSMiddleware
 # 📦 IMPORTING ALL ROUTERS & MODULES
 # ==========================================
 from CLOUDSERVER.auth import auth_api
-# 🔥 Logs aur Naya 'payment' import add ho gaya hai yahan
-from CLOUDSERVER.apis import deploy, restart, status, ping, env_manager, services, logs, payment
+# 🔥 GitHub ka import add kar diya hai
+from CLOUDSERVER.apis import deploy, restart, status, ping, env_manager, services, logs, payment, github
 
 # Note: Jaise hi app start hoga, database connection file (database.py) 
 # background mein apne aap trigger ho jayegi in imports ke through!
@@ -14,7 +14,7 @@ from CLOUDSERVER.apis import deploy, restart, status, ping, env_manager, service
 app = FastAPI(
     title="My Custom Cloud API ☁️",
     description="Render aur Heroku se bhi fast custom deployment API with MongoDB! 🔥",
-    version="2.0.0",     # Version upgrade kar diya 😎
+    version="2.1.0",     # Version upgrade for GitHub Integration 😎
     docs_url="/docs",    # Yahan se tu bina website ke API test karega
     redoc_url="/redoc"
 )
@@ -49,8 +49,12 @@ app.include_router(services.router, prefix="/api", tags=["User Services Dashboar
 # 4. WebSockets (Live Data)
 app.include_router(logs.router, prefix="/ws", tags=["Live Logs Streaming"])
 
-# 5. Billing & Payments (Naya System 🚀)
+# 5. Billing & Payments (Premium System)
 app.include_router(payment.router, prefix="/api", tags=["Billing & Subscriptions"])
+
+# 6. GitHub Integration (Private Repos) 🐙
+app.include_router(github.router, prefix="/api", tags=["GitHub Connect"])
+
 
 # ==========================================
 # 🚀 ROOT ENDPOINT (Health Check)
