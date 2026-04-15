@@ -179,6 +179,7 @@ class VerifyOTPPayload(BaseModel):
 class LoginPayload(BaseModel):
     username: str
     password: str
+    captcha_token: str # 🛡️ NEW: Login mein bhi Captcha token aayega
 
 class ForgotPasswordPayload(BaseModel):
     username: str
@@ -252,10 +253,16 @@ async def verify_otp(payload: VerifyOTPPayload):
     return {"status": "success", "message": f"Account created successfully! Welcome {stored_data['username']} 🚀"}
 
 # ==========================================
-# 3. LOGIN ENDPOINT
+# 3. LOGIN ENDPOINT (With Turnstile Lock)
 # ==========================================
 @router.post("/login")
 async def login_user(payload: LoginPayload):
+
+    # 🤖 Step 0: VERIFY CAPTCHA FIRST!
+    is_human = await verify_turnstile(payload.captcha_token)
+    if not is_human:
+        raise HTTPException(status_code=400, detail="Robot detection failed! Tu bot hai kya? 🤖")
+
     user = await get_user_by_username(payload.username)
     
     if not user:
@@ -269,7 +276,7 @@ async def login_user(payload: LoginPayload):
     return {"status": "success", "message": "Login successful! Welcome back.", "api_key": user["api_key"]}
 
 # ==========================================
-# 4. FOR ভাগে PASSWORD
+# 4. FORGOT PASSWORD
 # ==========================================
 @router.post("/forgot-password")
 async def forgot_password(payload: ForgotPasswordPayload, background_tasks: BackgroundTasks):
@@ -305,4 +312,3 @@ async def reset_password(payload: ResetPasswordPayload):
     del TEMP_OTP_STORE[store_key]
 
     return {"status": "success", "message": "✅ Password has been reset successfully! You can now login with your new password."}
-    
