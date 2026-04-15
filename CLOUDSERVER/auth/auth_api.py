@@ -4,30 +4,21 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import random
-import json
 import os
 import hashlib
 from dotenv import load_dotenv
+
+# 🚀 Naya MongoDB Import!
+from CLOUDSERVER.database.user import create_user, get_user_by_username, get_user_by_email
 
 load_dotenv()
 
 router = APIRouter()
 
 # ==========================================
-# 🧠 DATABASE & TEMP STORAGE SETUP
+# 🧠 TEMP STORAGE SETUP (For OTP)
 # ==========================================
-USERS_DB_FILE = "users_db.json"
-TEMP_OTP_STORE = {} # Jab tak OTP verify nahi hota, data yahan rahega
-
-def load_users():
-    if not os.path.exists(USERS_DB_FILE):
-        return {}
-    with open(USERS_DB_FILE, "r") as f:
-        return json.load(f)
-
-def save_users(data):
-    with open(USERS_DB_FILE, "w") as f:
-        json.dump(data, f, indent=4)
+TEMP_OTP_STORE = {} # Jab tak OTP verify nahi hota, data memory mein rahega
 
 # Password Hashing (Taaki DB mein password safe rahe)
 def hash_password(password: str):
@@ -46,7 +37,6 @@ def send_otp_email(receiver_email: str, username: str, otp: int):
 
     subject = "☁️ Verify Your Cloud API Account ☁️"
     
-    # HTML Email Template (Mast wala)
     html_content = f"""
     <html>
       <body style="font-family: Arial, sans-serif; background-color: #f4f4f9; padding: 20px;">
@@ -72,7 +62,6 @@ def send_otp_email(receiver_email: str, username: str, otp: int):
     msg.attach(MIMEText(html_content, "html"))
 
     try:
-        # Gmail SMTP Server connect karna
         server = smtplib.SMTP("smtp.gmail.com", 587)
         server.starttls()
         server.login(sender_email, sender_password)
@@ -83,7 +72,7 @@ def send_otp_email(receiver_email: str, username: str, otp: int):
         print(f"🚨 [EMAIL FAILED] {str(e)}")
 
 # ==========================================
-# 📥 PAYLOAD MODELS (Frontend se kya aayega)
+# 📥 PAYLOAD MODELS
 # ==========================================
 class RegisterPayload(BaseModel):
     username: str
@@ -106,14 +95,12 @@ class ForgotPasswordPayload(BaseModel):
 # ==========================================
 @router.post("/register")
 async def register_user(payload: RegisterPayload, background_tasks: BackgroundTasks):
-    users = load_users()
-    
-    # Check if username or email already exists
-    if payload.username in users:
+    # MongoDB DB Checks
+    if await get_user_by_username(payload.username):
         raise HTTPException(status_code=400, detail="Username already taken!")
-    for user_data in users.values():
-        if user_data["email"] == payload.email:
-            raise HTTPException(status_code=400, detail="Email already registered!")
+        
+    if await get_user_by_email(payload.email):
+        raise HTTPException(status_code=400, detail="Email already registered!")
 
     # Generate 6-digit Random OTP
     otp = random.randint(100000, 999999)
@@ -125,7 +112,7 @@ async def register_user(payload: RegisterPayload, background_tasks: BackgroundTa
         "otp": otp
     }
 
-    # Background mein mast sa email bhej do
+    # Send email in background
     background_tasks.add_task(send_otp_email, payload.email, payload.username, otp)
 
     return {
@@ -146,16 +133,21 @@ async def verify_otp(payload: VerifyOTPPayload):
     if stored_data["otp"] != payload.otp:
         raise HTTPException(status_code=400, detail="Invalid OTP! Please try again.")
 
-    # OTP Sahi hai! Ab Account JSON mein save kar do
-    users = load_users()
-    users[stored_data["username"]] = {
+    # Generate Secure API Key
+    api_key = f"cloud_key_{hash_password(stored_data['username'] + str(random.random()))[:16]}"
+    
+    # User object for MongoDB
+    new_user = {
+        "username": stored_data["username"],
         "email": payload.email,
         "password": stored_data["password_hash"],
-        "api_key": f"cloud_key_{hash_password(stored_data['username'] + str(random.random()))[:16]}" # Fake API Key assign ki
+        "api_key": api_key
     }
-    save_users(users)
     
-    # Temp memory se delete kar do
+    # Save User to MongoDB
+    await create_user(new_user)
+    
+    # Clear temp memory
     del TEMP_OTP_STORE[payload.email]
 
     return {
@@ -168,21 +160,20 @@ async def verify_otp(payload: VerifyOTPPayload):
 # ==========================================
 @router.post("/login")
 async def login_user(payload: LoginPayload):
-    users = load_users()
+    user = await get_user_by_username(payload.username)
     
-    if payload.username not in users:
+    if not user:
         raise HTTPException(status_code=404, detail="Username not found!")
 
-    stored_hash = users[payload.username]["password"]
     provided_hash = hash_password(payload.password)
 
-    if stored_hash != provided_hash:
+    if user["password"] != provided_hash:
         raise HTTPException(status_code=401, detail="Incorrect Password!")
 
     return {
         "status": "success",
         "message": "Login successful! Welcome back.",
-        "api_key": users[payload.username]["api_key"]
+        "api_key": user["api_key"]
     }
 
 # ==========================================
@@ -190,22 +181,20 @@ async def login_user(payload: LoginPayload):
 # ==========================================
 @router.post("/forgot-password")
 async def forgot_password(payload: ForgotPasswordPayload, background_tasks: BackgroundTasks):
-    users = load_users()
+    user = await get_user_by_username(payload.username)
     
-    if payload.username not in users:
+    if not user:
         raise HTTPException(status_code=404, detail="Username not found!")
 
-    user_email = users[payload.username]["email"]
+    user_email = user["email"]
     
-    # Naya reset OTP generate karna
     reset_otp = random.randint(100000, 999999)
     TEMP_OTP_STORE[f"reset_{payload.username}"] = reset_otp
     
-    # Background email task
     background_tasks.add_task(send_otp_email, user_email, payload.username, reset_otp)
 
     return {
         "status": "success",
         "message": f"A password reset OTP has been sent to the registered email for {payload.username}."
-  }
-  
+    }
+    
