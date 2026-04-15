@@ -76,7 +76,7 @@ class NewDeployPayload(BaseModel):
     repo_url: str       
     repo_name: str      
     app_name: str       
-    folder_path: str = ""  # Frontend se aayega toh ignore karenge, hum apna path banayenge
+    folder_path: str = ""  
     use_docker: bool = False      
     start_cmd: Optional[str] = None 
 
@@ -106,10 +106,9 @@ async def run_background_update(repo_path: str, pm2_name: str, repo_url: str, us
         # Step 1: Smart pull code from GitHub (Token wale URL ke sath)
         pull_latest_code(repo_path, secure_repo_url)
         
-        # Step 2: Agar Reset/Redeploy hai, ya naya bot hai, toh requirements download karo (VENV Auto-handled in server_ops)
+        # Step 2: Agar Reset/Redeploy hai, ya naya bot hai, toh requirements download karo
         if not use_docker and is_reset:
             print(f"📦 [DEPLOY ENGINE] Installing dependencies for {pm2_name}...")
-            # Ye ab server_ops.py ke pull_latest_code mein handle ho raha hai, but incase force reset karna ho
             install_requirements(repo_path) 
 
         # Step 3: PM2 ya Docker Start
@@ -127,7 +126,7 @@ async def run_background_update(repo_path: str, pm2_name: str, repo_url: str, us
             send_deployment_email(user_email, pm2_name, "failed", error_msg)
 
 # ==========================================
-# 1. NEW DEPLOYMENT API (Auto Folder Path)
+# 1. NEW DEPLOYMENT API (Auto Folder Path) - 🔥 PREMIUM LOCKED
 # ==========================================
 @router.post("/deploy-new")
 async def create_new_deployment(
@@ -135,6 +134,15 @@ async def create_new_deployment(
     background_tasks: BackgroundTasks,
     current_user: str = Depends(verify_api_key) 
 ):
+    # 🛑 THE UNBREAKABLE PREMIUM LOCK
+    user_info = await get_user_by_username(current_user)
+    if not user_info or not user_info.get("is_premium"):
+        raise HTTPException(
+            status_code=403, 
+            detail="🔒 Premium Plan Required! Upgrade to deploy new applications on NEX CLOUD."
+        )
+
+    # Baki saari purani checks
     if not payload.use_docker and not payload.start_cmd:
         raise HTTPException(status_code=400, detail="❌ Bhai, PM2 ke liye start_cmd toh bhej!")
 
@@ -147,19 +155,19 @@ async def create_new_deployment(
     # 🧠 SMART PATH GENERATOR (Frontend ka kachra path ignore!)
     auto_folder_path = f"/home/ubuntu/nex_cloud_apps/{current_user}/{payload.app_name}"
 
-    # Save to Database (Clean URL save karenge, token wala nahi taaki DB secure rahe)
+    # Save to Database
     bot_data = {
         "repo_url": payload.repo_url,    
         "repo_name": payload.repo_name,  
         "pm2_name": payload.app_name,
-        "folder_path": auto_folder_path, # <--- Auto path injected here!
+        "folder_path": auto_folder_path, 
         "use_docker": payload.use_docker,
         "start_cmd": payload.start_cmd,
         "owner": current_user  
     }
     await register_new_bot(bot_data)
 
-    # Naya bot direct deploy pe laga do (First Time Install = True)
+    # Naya bot direct deploy pe laga do
     background_tasks.add_task(
         run_background_update, 
         auto_folder_path, payload.app_name, payload.repo_url, 
@@ -226,36 +234,3 @@ async def bot_actions(payload: ActionPayload, background_tasks: BackgroundTasks,
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
         
-# isko deploys.py ke sabse end mein add kar de:
-
-async def update_bot_repo_details(app_name: str, new_repo_url: str, new_start_cmd: str, new_repo_name: str):
-    """User agar Repo URL ya Start Command change karta hai toh ye DB update karega"""
-    from CLOUDSERVER.database.database import deploys_collection
-    
-    result = await deploys_collection.update_one(
-        {"pm2_name": app_name},
-        {"$set": {
-            "repo_url": new_repo_url,
-            "repo_name": new_repo_name,
-            "start_cmd": new_start_cmd
-        }}
-    )
-    return result.modified_count > 0
-
-async def update_bot_env_vars(app_name: str, env_data: dict):
-    """MongoDB mein bhi env variables ka backup rakhenge taaki Frontend pe show ho sakein"""
-    from CLOUDSERVER.database.database import deploys_collection
-    
-    result = await deploys_collection.update_one(
-        {"pm2_name": app_name},
-        {"$set": {"env_vars": env_data}}
-    )
-    return result.modified_count > 0
-    
-async def delete_bot_from_db(app_name: str):
-    """MongoDB se bot ka record hamesha ke liye delete kar dega"""
-    from CLOUDSERVER.database.database import deploys_collection
-    
-    result = await deploys_collection.delete_one({"pm2_name": app_name})
-    return result.deleted_count > 0
-    
