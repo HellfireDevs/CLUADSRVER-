@@ -4,7 +4,7 @@ from CLOUDSERVER.database.database import deploys_collection
 
 router = APIRouter()
 
-@router.get("/my-services")
+@router.get("/services")
 async def get_my_services(username: str = Depends(verify_api_key)):
     """
     Ye API token check karegi aur us specific user ke saare bots MongoDB se nikaal kar degi.
