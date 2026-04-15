@@ -7,3 +7,5 @@ aiohttp
 email-validator
 motor
 psutil
+httpx
+requests
