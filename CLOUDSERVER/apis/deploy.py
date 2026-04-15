@@ -252,3 +252,10 @@ async def update_bot_env_vars(app_name: str, env_data: dict):
     )
     return result.modified_count > 0
     
+async def delete_bot_from_db(app_name: str):
+    """MongoDB se bot ka record hamesha ke liye delete kar dega"""
+    from CLOUDSERVER.database.database import deploys_collection
+    
+    result = await deploys_collection.delete_one({"pm2_name": app_name})
+    return result.deleted_count > 0
+    
