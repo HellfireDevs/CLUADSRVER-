@@ -122,24 +122,21 @@ def restart_pm2(app_name: str, folder_path: str, use_docker: bool = False, start
                 if not start_cmd:
                     raise Exception("❌ PM2 ke liye start_cmd zaroori hai (e.g., 'python3 main.py')")
                 
-                # 🧠 SMART PYTHON PATH REPLACER (No more String Replace "Path Biryani")
-                cmd_parts = start_cmd.strip().split()
-                
-                if cmd_parts[0] in ["python", "python3"]:
-                    # Extraction: sirf file ka naam uthao (e.g., "main.py")
-                    script_to_run = " ".join(cmd_parts[1:]) if len(cmd_parts) > 1 else "main.py"
+                # 🧠 SMART PYTHON PATH REPLACER (Fix for -m flags & Arguments)
+                if start_cmd.startswith("python3 ") or start_cmd.startswith("python "):
                     venv_python = os.path.join(folder_path, "venv", "bin", "python")
                     
-                    print(f"🔥 [PM2] Starting newly with VENV Interpreter: {venv_python} | Script: {script_to_run}")
+                    # 'python3 -m bot' ko '/.../venv/bin/python -m bot' bana dega
+                    if start_cmd.startswith("python3 "):
+                        start_cmd = start_cmd.replace("python3 ", f"{venv_python} ", 1)
+                    else:
+                        start_cmd = start_cmd.replace("python ", f"{venv_python} ", 1)
                     
-                    # Exact command array, koi shell=True ka nakhra nahi
-                    cmd = [
-                        "pm2", "start", script_to_run,
-                        "--name", app_name,
-                        "--interpreter", venv_python,
-                        "--cwd", folder_path
-                    ]
-                    subprocess.run(cmd, check=True)
+                    print(f"🔥 [PM2] Starting newly with Full VENV CMD: {start_cmd}")
+                    
+                    # Pura command single quotes mein dalenge taaki PM2 usko as a script command treat kare
+                    cmd = f"pm2 start '{start_cmd}' --name {app_name}"
+                    subprocess.run(cmd, shell=True, cwd=folder_path, check=True)
                 else:
                     # Agar nodejs ya bash script ho
                     print(f"🔥 [PM2] Starting newly with CMD: {start_cmd}")
@@ -162,4 +159,3 @@ def restart_pm2(app_name: str, folder_path: str, use_docker: bool = False, start
     except Exception as e:
         print(f"❌ [SYSTEM ERROR]: {str(e)}")
         raise Exception(f"Deployment System Error: {str(e)}")
-        
