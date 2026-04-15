@@ -7,14 +7,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from CLOUDSERVER.auth import auth_api
 from CLOUDSERVER.apis import (
     deploy, restart, status, ping, 
-    envmanager, services, logs,  # 🔥 FIXED: envmanager (bina underscore ke)
-    payment, github, account, support
+    envmanager, services, logs,  
+    payment, github, account, support,
+    google_auth  # 🔥 NAYA: Google Auth Import
 )
 
 app = FastAPI(
     title="NEX CLOUD Engine ☁️",
-    description="Custom deployment API with MongoDB, GitHub OAuth, and Support System! 🔥",
-    version="2.5.0",     # Version upgraded for Support & Account system 😎
+    description="Custom deployment API with MongoDB, GitHub OAuth, Google Login, and Support System! 🔥",
+    version="2.6.0",     # Version upgraded for Google OAuth 😎
     docs_url="/docs",    
     redoc_url="/redoc"
 )
@@ -42,7 +43,7 @@ app.include_router(deploy.router, prefix="/api", tags=["Deployment & Webhooks"])
 app.include_router(restart.router, prefix="/api", tags=["Process Management"])
 app.include_router(status.router, prefix="/api", tags=["System Status"])
 app.include_router(ping.router, prefix="/api", tags=["Health & Uptime"])
-app.include_router(envmanager.router, prefix="/api", tags=["Environment Variables & Repo Updates"]) # 🔥 FIXED
+app.include_router(envmanager.router, prefix="/api", tags=["Environment Variables & Repo Updates"])
 
 # 3. User Dashboard & Profile Data
 app.include_router(services.router, prefix="/api", tags=["User Dashboard"])
@@ -56,10 +57,13 @@ app.include_router(payment.router, prefix="/api", tags=["Billing & Payments"])
 # 6. GitHub Integration (OAuth & Private Repos) 🐙
 app.include_router(github.router, prefix="/api", tags=["GitHub Connect"])
 
-# 7. Account Management (Delete with OTP) 💣
+# 7. Google Login (OAuth) 🔴
+app.include_router(google_auth.router, prefix="/api/google", tags=["Google OAuth"])
+
+# 8. Account Management (Delete with OTP) 💣
 app.include_router(account.router, prefix="/api/account", tags=["Account Management"])
 
-# 8. Support Desk (Ticket System) 🎫
+# 9. Support Desk (Ticket System) 🎫
 app.include_router(support.router, prefix="/api/support", tags=["Support Desk"])
 
 
@@ -73,7 +77,7 @@ async def root_check():
         "message": "🚀 Welcome to NEX CLOUD Engine!",
         "engine_state": "Online & Running",
         "database": "MongoDB Connected",
-        "version": "2.5.0",
+        "version": "2.6.0",
         "tip": "Visit /docs to test the APIs."
     }
     
