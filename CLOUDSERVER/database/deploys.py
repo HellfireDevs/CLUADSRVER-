@@ -1,4 +1,8 @@
-from CLOUDSERVER.database.database import deploys_collection
+from CLOUDSERVER.database.database import deploys_collection, payments_collection
+
+# ==========================================
+# 🤖 BOT DEPLOYMENT DB FUNCTIONS
+# ==========================================
 
 async def register_new_bot(bot_data: dict):
     """Naya bot DB mein register karega"""
@@ -42,4 +46,22 @@ async def delete_bot_from_db(app_name: str):
     """MongoDB se bot ka record hamesha ke liye delete kar dega"""
     result = await deploys_collection.delete_one({"pm2_name": app_name})
     return result.deleted_count > 0
+
+# ==========================================
+# 💸 PAYMENT & TRANSACTION DB FUNCTIONS
+# ==========================================
+
+async def get_user_transaction_history(username: str):
+    """User ki saari transactions fetch karega (Latest first)"""
+    # -1 ka matlab hai descending order (Nayi payment sabse upar)
+    cursor = payments_collection.find({"username": username}).sort("timestamp", -1)
+    transactions = await cursor.to_list(length=100) # Max 100 history dikhayenge
+    
+    # MongoDB ke ObjectID ko string mein convert karna zaroori hai JSON ke liye
+    history = []
+    for txn in transactions:
+        txn["_id"] = str(txn["_id"])
+        history.append(txn)
+        
+    return history
     
