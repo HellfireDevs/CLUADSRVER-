@@ -6,13 +6,14 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
-import httpx # 🚀 CHANGED: requests to httpx for async operation
+import httpx 
 
 from CLOUDSERVER.database.user import get_user_by_username, update_user_premium
-from CLOUDSERVER.database.database import tickets_collection # 🚨 NAYA IMPORT SUPPORT KE LIYE
+# 🔥 FIX 1: Yahan payments_collection import add kiya hai
+from CLOUDSERVER.database.database import tickets_collection, payments_collection 
 from CLOUDSERVER.auth.verify import verify_api_key
 
-# 🚀 NAYA IMPORT TRANSACTION HISTORY KE LIYE
+# Transaction History
 from CLOUDSERVER.database.deploys import get_user_transaction_history
 
 router = APIRouter()
@@ -85,11 +86,10 @@ class PaymentSubmitPayload(BaseModel):
 # ==========================================
 @router.post("/verify-coupon") 
 async def verify_coupon(payload: CouponPayload, current_user: str = Depends(verify_api_key)):
-    # Dummy Coupon Validation
     valid_coupons = {
         "NEXFREE": {"discount_percentage": 100},
         "BHAICHARA": {"discount_percentage": 50},
-        "TANNU@1289": {"discount_percentage": 100} # 🔥 TERA SPECIAL COUPON ADDED
+        "TANNU@1289": {"discount_percentage": 100}
     }
     
     if payload.code.upper() in valid_coupons:
@@ -102,7 +102,7 @@ async def verify_coupon(payload: CouponPayload, current_user: str = Depends(veri
 
 
 # ==========================================
-# 2. SUBMIT PAYMENT (To Telegram)
+# 2. SUBMIT PAYMENT (To Telegram & DB)
 # ==========================================
 @router.post("/submit-payment")
 async def submit_payment(payload: PaymentSubmitPayload, current_user: str = Depends(verify_api_key)):
@@ -111,6 +111,18 @@ async def submit_payment(payload: PaymentSubmitPayload, current_user: str = Depe
     if "1" in payload.plan: plan_months = 1
     elif "6" in payload.plan: plan_months = 6
     elif "12" in payload.plan: plan_months = 12
+
+    # 🔥 FIX 2: Transaction ko DB mein 'Pending' status ke sath save karna zaroori hai
+    txn_data = {
+        "username": current_user,
+        "amount": payload.amount,
+        "plan": payload.plan,
+        "utr_number": payload.transaction_id,
+        "coupon_code": payload.coupon_used,
+        "status": "Pending",
+        "timestamp": datetime.utcnow()
+    }
+    await payments_collection.insert_one(txn_data)
 
     msg_text = (
         f"🚨 <b>NEW PAYMENT PENDING</b> 🚨\n\n"
@@ -171,6 +183,12 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 plan_months = int(extra_data)
                 duration_days = plan_months * 30
                 
+                # 🔥 FIX 3: Approve hone pe DB me transaction 'Success' mark kardo
+                await payments_collection.update_many(
+                    {"username": username, "status": "Pending"},
+                    {"$set": {"status": "Success"}}
+                )
+
                 await update_user_premium(username, is_premium=True, days=duration_days)
                 
                 user_info = await get_user_by_username(username)
@@ -184,6 +202,12 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 })
 
             elif action == "reject":
+                # 🔥 FIX 4: Reject hone pe DB me transaction 'Rejected' mark kardo
+                await payments_collection.update_many(
+                    {"username": username, "utr_number": extra_data, "status": "Pending"},
+                    {"$set": {"status": "Rejected"}}
+                )
+
                 await client.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText", json={
                     "chat_id": chat_id,
                     "message_id": message_id,
@@ -202,7 +226,6 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
         chat_id = data["message"]["chat"]["id"]
         
         if str(chat_id) == str(TELEGRAM_ADMIN_ID) and admin_reply:
-            # Check if this reply is to a ticket
             ticket = await tickets_collection.find_one({"tg_message_id": reply_to_id})
             
             if ticket:
@@ -217,18 +240,15 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 user_info = await get_user_by_username(username)
                 if user_info and "email" in user_info:
                     frontend_url = "https://cluadwebsite.vercel.app/support"
-                    
                     html_content = f"""
                     <div style="font-family: Arial; background: #050505; color: white; padding: 20px;">
                         <div style="max-width: 500px; margin: auto; background: #0a0a0a; padding: 30px; border-radius: 15px; border-top: 4px solid #a855f7;">
                             <h2 style="color: #a855f7;">Support Ticket Updated 🎫</h2>
                             <p>Hello <b>{username}</b>,</p>
                             <p>An admin has replied to your ticket (<b>{ticket_id}</b>):</p>
-                            
                             <div style="background: #111; padding: 15px; border-left: 3px solid #a855f7; margin: 20px 0; font-style: italic;">
                                 "{admin_reply}"
                             </div>
-                            
                             <a href="{frontend_url}" style="display: inline-block; padding: 12px 24px; background: #a855f7; color: white; text-decoration: none; border-radius: 8px; font-weight: bold; margin-top: 10px;">
                                 View Ticket on Dashboard
                             </a>
@@ -245,6 +265,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                     })
 
     return {"status": "ok"}
+
 
 # ==========================================
 # 4. 💸 GET TRANSACTION HISTORY
