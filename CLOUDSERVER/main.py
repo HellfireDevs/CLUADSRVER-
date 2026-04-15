@@ -5,8 +5,8 @@ from fastapi.middleware.cors import CORSMiddleware
 # 📦 IMPORTING ALL ROUTERS & MODULES
 # ==========================================
 from CLOUDSERVER.auth import auth_api
-# 🔥 Naya 'logs' import add ho gaya hai yahan
-from CLOUDSERVER.apis import deploy, restart, status, ping, env_manager, services, logs
+# 🔥 Logs aur Naya 'payment' import add ho gaya hai yahan
+from CLOUDSERVER.apis import deploy, restart, status, ping, env_manager, services, logs, payment
 
 # Note: Jaise hi app start hoga, database connection file (database.py) 
 # background mein apne aap trigger ho jayegi in imports ke through!
@@ -46,9 +46,11 @@ app.include_router(env_manager.router, prefix="/api", tags=["Environment Variabl
 # 3. User Dashboard Data
 app.include_router(services.router, prefix="/api", tags=["User Services Dashboard"])
 
-# 4. WebSockets (Live Data) - 🚀 Ye Raha Tera Naya Live Logs Engine
+# 4. WebSockets (Live Data)
 app.include_router(logs.router, prefix="/ws", tags=["Live Logs Streaming"])
 
+# 5. Billing & Payments (Naya System 🚀)
+app.include_router(payment.router, prefix="/api", tags=["Billing & Subscriptions"])
 
 # ==========================================
 # 🚀 ROOT ENDPOINT (Health Check)
