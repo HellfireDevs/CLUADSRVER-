@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from typing import Optional
 import os
 import smtplib
+import asyncio # 🔥 YAHAN ASYNCIO ADD KIYA HAI API FREEZE ROKNE KE LIYE
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
@@ -85,7 +86,7 @@ class ActionPayload(BaseModel):
     action: str # "stop", "restart", "reset"
 
 # ==========================================
-# ⚙️ BACKGROUND DEPLOYMENT ENGINE (With Private Repo Magic)
+# ⚙️ BACKGROUND DEPLOYMENT ENGINE (NON-BLOCKING FIX)
 # ==========================================
 async def run_background_update(repo_path: str, pm2_name: str, repo_url: str, use_docker: bool, start_cmd: str, owner: str, is_reset: bool = False):
     """Background engine jo Code Pull karega, Requirements install karega, aur Deploy marega"""
@@ -103,16 +104,16 @@ async def run_background_update(repo_path: str, pm2_name: str, repo_url: str, us
         secure_repo_url = repo_url.replace("https://github.com/", f"https://{github_token}@github.com/")
 
     try:
-        # Step 1: Smart pull code from GitHub (Token wale URL ke sath)
-        pull_latest_code(repo_path, secure_repo_url)
+        # 🔥 FIX: Sab heavy kaam ko 'to_thread' mein daal diya taaki API freeze na ho!
+        await asyncio.to_thread(pull_latest_code, repo_path, secure_repo_url)
         
         # Step 2: Agar Reset/Redeploy hai, ya naya bot hai, toh requirements download karo
         if not use_docker and is_reset:
             print(f"📦 [DEPLOY ENGINE] Installing dependencies for {pm2_name}...")
-            install_requirements(repo_path) 
+            await asyncio.to_thread(install_requirements, repo_path) 
 
         # Step 3: PM2 ya Docker Start
-        restart_pm2(pm2_name, repo_path, use_docker, start_cmd)
+        await asyncio.to_thread(restart_pm2, pm2_name, repo_path, use_docker, start_cmd)
         
         print(f"🔥 [DEPLOY ENGINE] 100% DONE! {pm2_name} is LIVE.")
         
@@ -213,11 +214,12 @@ async def bot_actions(payload: ActionPayload, background_tasks: BackgroundTasks,
 
     try:
         if payload.action == "stop":
-            stop_pm2(payload.app_name)
+            # PM2 Stop API freeze nahi karta, isko as-is chhod sakte hain ya isko bhi to_thread mein daal sakte hain
+            await asyncio.to_thread(stop_pm2, payload.app_name)
             return {"status": "success", "message": "Bot Stopped!"}
             
         elif payload.action == "restart":
-            restart_pm2(payload.app_name, bot_info["folder_path"], bot_info.get("use_docker"), bot_info.get("start_cmd"))
+            await asyncio.to_thread(restart_pm2, payload.app_name, bot_info["folder_path"], bot_info.get("use_docker"), bot_info.get("start_cmd"))
             return {"status": "success", "message": "Bot Restarted!"}
             
         elif payload.action == "reset":
