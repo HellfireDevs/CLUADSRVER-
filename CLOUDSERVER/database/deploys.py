@@ -78,3 +78,16 @@ async def get_user_transaction_history(username: str):
         
     return history
     
+# ==========================================
+# 🔥 AUTO-DEPLOY PENDING FLAG UPDATER
+# ==========================================
+async def set_update_pending(app_name: str, status: bool):
+    """Agar Auto-Deploy OFF hai, toh ye flag True ho jayega frontend ko popup dikhane ke liye"""
+    from CLOUDSERVER.database.database import deploys_collection # Tera jo bhi collection import hai wo yahan use hoga
+    
+    result = await deploys_collection.update_one(
+        {"pm2_name": app_name},
+        {"$set": {"update_pending": status}}
+    )
+    return result.modified_count > 0
+    
