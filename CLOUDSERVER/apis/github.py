@@ -1,5 +1,5 @@
 import os
-import requests
+import httpx  # 🚀 Naya Fast Async Library
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 
@@ -12,7 +12,6 @@ router = APIRouter()
 GITHUB_CLIENT_ID = os.getenv("GITHUB_CLIENT_ID")
 GITHUB_CLIENT_SECRET = os.getenv("GITHUB_CLIENT_SECRET")
 
-# 🚨 DHYAN RAKHNA: Agar locally test kar raha hai toh isko http://localhost:5173/deploy kar dena
 FRONTEND_REDIRECT_URL = "https://cluadwebsite.vercel.app/deploy"
 
 # ==========================================
@@ -20,8 +19,6 @@ FRONTEND_REDIRECT_URL = "https://cluadwebsite.vercel.app/deploy"
 # ==========================================
 @router.get("/github/login")
 async def github_login(username: str):
-    """Frontend isko call karega GitHub ka redirect URL lene ke liye"""
-    # 'scope=repo' dena zaroori hai private repos access karne ke liye
     url = f"https://github.com/login/oauth/authorize?client_id={GITHUB_CLIENT_ID}&scope=repo&state={username}"
     return {"status": "success", "url": url}
 
@@ -30,8 +27,6 @@ async def github_login(username: str):
 # ==========================================
 @router.get("/github/callback")
 async def github_callback(code: str, state: str):
-    """GitHub authorization ke baad is route pe code wapas bhejega"""
-    # 1. Code ke badle Access Token maango
     token_url = "https://github.com/login/oauth/access_token"
     headers = {"Accept": "application/json"}
     payload = {
@@ -40,18 +35,23 @@ async def github_callback(code: str, state: str):
         "code": code
     }
     
-    resp = requests.post(token_url, json=payload, headers=headers).json()
-    access_token = resp.get("access_token")
+    # 🚀 Async HTTP Request
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(token_url, json=payload, headers=headers)
+        resp_data = resp.json()
+        access_token = resp_data.get("access_token")
 
-    if access_token:
-        # 2. Token se user ka GitHub Username nikalo
-        user_resp = requests.get("https://api.github.com/user", headers={"Authorization": f"Bearer {access_token}"}).json()
-        gh_username = user_resp.get("login")
+        if access_token:
+            # 🚀 Token se user ka GitHub Username nikalo bina server ko block kiye
+            user_resp = await client.get(
+                "https://api.github.com/user", 
+                headers={"Authorization": f"Bearer {access_token}"}
+            )
+            gh_username = user_resp.json().get("login")
 
-        # 3. Database mein Token save kar do (state mein humne apna 'username' bheja tha)
-        await update_github_token(username=state, token=access_token, github_username=gh_username)
+            # Database mein Token save kar do
+            await update_github_token(username=state, token=access_token, github_username=gh_username)
 
-    # 4. User ko wapas Frontend Deploy page pe bhej do
     return RedirectResponse(url=FRONTEND_REDIRECT_URL)
 
 # ==========================================
@@ -59,7 +59,6 @@ async def github_callback(code: str, state: str):
 # ==========================================
 @router.get("/github/repos")
 async def get_github_repos(current_user: str = Depends(verify_api_key)):
-    """User ke saare latest repos fetch karega"""
     user = await get_user_by_username(current_user)
     token = user.get("github_token")
     gh_username = user.get("github_username")
@@ -67,20 +66,19 @@ async def get_github_repos(current_user: str = Depends(verify_api_key)):
     if not token:
         return {"status": "disconnected", "repos": []}
 
-    # GitHub se repos maango (Sort by letest push, Max 100 limit)
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.v3+json"}
     url = "https://api.github.com/user/repos?sort=pushed&per_page=100"
     
-    resp = requests.get(url, headers=headers)
+    # 🚀 Async Repo Fetch
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(url, headers=headers)
 
     if resp.status_code != 200:
-        # Agar token expire ho gaya ho toh disconnect kar do
         await remove_github_token(current_user)
         return {"status": "disconnected", "repos": []}
 
     repos = resp.json()
     
-    # Filter karke sirf kaam ka data frontend ko bhejenge
     clean_repos = []
     for repo in repos:
         clean_repos.append({
@@ -105,4 +103,4 @@ async def get_github_repos(current_user: str = Depends(verify_api_key)):
 async def disconnect_github(current_user: str = Depends(verify_api_key)):
     await remove_github_token(current_user)
     return {"status": "success", "message": "GitHub disconnected successfully!"}
-  
+    
