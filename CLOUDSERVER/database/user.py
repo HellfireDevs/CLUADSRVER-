@@ -55,4 +55,23 @@ async def update_user_premium(username: str, is_premium: bool, days: int = 0):
         {"$set": update_data}
     )
     return True
+
+# ==========================================
+# 🐙 GITHUB OAUTH SYSTEM (Private Repos ke liye)
+# ==========================================
+async def update_github_token(username: str, token: str, github_username: str):
+    """User ke account mein GitHub ka Access Token save karega"""
+    await users_collection.update_one(
+        {"username": username},
+        {"$set": {"github_token": token, "github_username": github_username}}
+    )
+    return True
+
+async def remove_github_token(username: str):
+    """User ke account se GitHub disconnect karega"""
+    await users_collection.update_one(
+        {"username": username},
+        {"$unset": {"github_token": "", "github_username": ""}}
+    )
+    return True
     
