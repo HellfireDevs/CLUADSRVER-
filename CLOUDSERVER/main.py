@@ -1,47 +1,61 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-# Baad mein jab hum apis folder mein files banayenge, tab inko uncomment karenge
-# from CLOUDSERVER.apis import deploy, restart, status
+# ==========================================
+# 📦 IMPORTING ALL ROUTERS & MODULES
+# ==========================================
+from CLOUDSERVER.auth import auth_api
+from CLOUDSERVER.apis import deploy, restart, status, ping, env_manager
+
+# Note: Jaise hi app start hoga, database connection file (database.py) 
+# background mein apne aap trigger ho jayegi in imports ke through!
 
 app = FastAPI(
     title="My Custom Cloud API ☁️",
-    description="Render aur Heroku se bhi fast custom deployment API 🔥",
-    version="1.0.0",
+    description="Render aur Heroku se bhi fast custom deployment API with MongoDB! 🔥",
+    version="2.0.0",     # Version upgrade kar diya 😎
     docs_url="/docs",    # Yahan se tu bina website ke API test karega
     redoc_url="/redoc"
 )
 
-# CORS Setup: Taaki future mein kisi bhi website ya dashboard se ye API connect ho sake
+# ==========================================
+# 🛡️ CORS SETUP
+# ==========================================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Abhi sabko allow kiya hai, baad mein strictly apne IP pe lock kar denge
+    allow_origins=["*"],  # Abhi sabko allow kiya hai, baad mein specific IPs pe lock kar denge
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # ==========================================
-# API ROUTERS (Linking other folders)
+# 🔗 API ROUTERS (Linking everything)
 # ==========================================
-# Jaise-jaise hum apis/ folder mein files banayenge, unko yahan link karte jayenge
-# app.include_router(deploy.router, prefix="/api", tags=["Deployment"])
-# app.include_router(restart.router, prefix="/api", tags=["Process Management"])
-# app.include_router(status.router, prefix="/api", tags=["System Status"])
+# 1. Authentication & Security
+app.include_router(auth_api.router, prefix="/auth", tags=["Authentication & Security"])
+
+# 2. Core Server & Bot APIs
+app.include_router(deploy.router, prefix="/api", tags=["Deployment & Webhooks"])
+app.include_router(restart.router, prefix="/api", tags=["Process Management"])
+app.include_router(status.router, prefix="/api", tags=["System Status"])
+app.include_router(ping.router, prefix="/api", tags=["Health & Uptime"])
+app.include_router(env_manager.router, prefix="/api", tags=["Environment Variables"])
 
 
 # ==========================================
-# ROOT ENDPOINT (Health Check)
+# 🚀 ROOT ENDPOINT (Health Check)
 # ==========================================
-@app.get("/", tags=["Health Check"])
+@app.get("/", tags=["Root"])
 async def root_check():
     """
     Ye check karne ke liye ki tera Cloud API server zinda hai ya nahi.
     """
     return {
         "status": "success",
-        "message": "🚀 Welcome to My Cloud API Engine!",
+        "message": "🚀 Welcome to My Custom Cloud Engine!",
         "engine_state": "Online & Running",
+        "database": "MongoDB Connected",
         "tip": "Visit /docs to test the APIs."
     }
-
+    
