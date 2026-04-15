@@ -145,7 +145,7 @@ async def create_new_deployment(
         raise HTTPException(status_code=400, detail=f"❌ App Name '{payload.app_name}' database mein pehle se taken hai!")
 
     # 🧠 SMART PATH GENERATOR (Frontend ka kachra path ignore!)
-    auto_folder_path = f"/root/nex_cloud_apps/{current_user}/{payload.app_name}"
+    auto_folder_path = f"/home/ubuntu/nex_cloud_apps/{current_user}/{payload.app_name}"
 
     # Save to Database (Clean URL save karenge, token wala nahi taaki DB secure rahe)
     bot_data = {
