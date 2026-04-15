@@ -17,3 +17,13 @@ async def get_user_by_api_key(api_key: str):
     """API Key se verify karega (Security ke liye)"""
     return await users_collection.find_one({"api_key": api_key})
   
+# isko user.py ke end mein add kar de
+async def update_user_password(username: str, new_password_hash: str):
+    """User ka password reset karega MongoDB mein"""
+    from CLOUDSERVER.database.database import users_collection
+    await users_collection.update_one(
+        {"username": username},
+        {"$set": {"password": new_password_hash}}
+    )
+    return True
+    
