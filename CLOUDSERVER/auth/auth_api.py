@@ -8,7 +8,7 @@ import os
 import hashlib
 from dotenv import load_dotenv
 
-# 🚀 Naya MongoDB Import (update_user_password bhi add kiya hai)
+# 🚀 Naya MongoDB Import
 from CLOUDSERVER.database.user import create_user, get_user_by_username, get_user_by_email, update_user_password
 
 load_dotenv()
@@ -16,9 +16,36 @@ load_dotenv()
 router = APIRouter()
 
 # ==========================================
-# 🧠 TEMP STORAGE SETUP (For OTP)
+# 🧠 TEMP STORAGE & SECURITY SETUP
 # ==========================================
 TEMP_OTP_STORE = {} # Jab tak OTP verify nahi hota, data memory mein rahega
+
+# 🛑 Blocked Temp Mail Domains (Isko tu apne hisaab se aur badha sakta hai)
+BLOCKED_DOMAINS = {
+    "mailinator.com", "10minutemail.com", "tempmail.com", "temp-mail.org", 
+    "guerrillamail.com", "yopmail.com", "throwawaymail.com", "dispostable.com", 
+    "getairmail.com", "trashmail.com", "sharklasers.com", "nada.ltd"
+}
+
+# 🛡️ Smart Email Normalizer (Dot/Plus trick killer)
+def sanitize_email(email: str) -> str:
+    email = email.lower().strip()
+    username, domain = email.split('@')
+
+    # Agar temp mail hai toh block karo
+    if domain in BLOCKED_DOMAINS:
+        raise HTTPException(status_code=400, detail="❌ Disposable/Temp emails are not allowed! Asli email use kar bhai.")
+
+    # Gmail Dot aur Plus trick fixer
+    if domain in ["gmail.com", "googlemail.com"]:
+        # '+' ke baad ka sab kuch uda do
+        username = username.split('+')[0]
+        # Saare '.' (dots) uda do
+        username = username.replace('.', '')
+        # googlemail ko bhi gmail maan lo
+        domain = "gmail.com"
+
+    return f"{username}@{domain}"
 
 # Password Hashing
 def hash_password(password: str):
@@ -70,7 +97,7 @@ def send_otp_email(receiver_email: str, username: str, otp: int):
         print(f"🚨 [EMAIL FAILED] {str(e)}")
 
 # ==========================================
-# 📧 2. FORGOT PASSWORD EMAIL TEMPLATE (Naya Mast Wala!)
+# 📧 2. FORGOT PASSWORD EMAIL TEMPLATE
 # ==========================================
 def send_reset_otp_email(receiver_email: str, username: str, otp: int):
     sender_email = os.getenv("SENDER_EMAIL")
@@ -120,11 +147,11 @@ def send_reset_otp_email(receiver_email: str, username: str, otp: int):
 # ==========================================
 class RegisterPayload(BaseModel):
     username: str
-    email: EmailStr
+    email: str # EmailStr ki jagah str rakha taaki pehle sanitize kar sakein
     password: str
 
 class VerifyOTPPayload(BaseModel):
-    email: EmailStr
+    email: str
     otp: int
 
 class LoginPayload(BaseModel):
@@ -144,18 +171,23 @@ class ResetPasswordPayload(BaseModel):
 # ==========================================
 @router.post("/register")
 async def register_user(payload: RegisterPayload, background_tasks: BackgroundTasks):
+    # 🛡️ Step 1: Clean the email (removes dots, blocks temp mails)
+    clean_email_address = sanitize_email(payload.email)
+
     if await get_user_by_username(payload.username):
         raise HTTPException(status_code=400, detail="Username already taken!")
         
-    if await get_user_by_email(payload.email):
-        raise HTTPException(status_code=400, detail="Email already registered!")
+    if await get_user_by_email(clean_email_address):
+        raise HTTPException(status_code=400, detail="Email already registered! Stop trying to create multiple accounts.")
 
     otp = random.randint(100000, 999999)
     
-    TEMP_OTP_STORE[payload.email] = {
+    # Store with CLEAN email
+    TEMP_OTP_STORE[clean_email_address] = {
         "username": payload.username,
         "password_hash": hash_password(payload.password),
-        "otp": otp
+        "otp": otp,
+        "original_email": payload.email # Mails bhejte waqt asli ID use karenge
     }
 
     background_tasks.add_task(send_otp_email, payload.email, payload.username, otp)
@@ -167,10 +199,12 @@ async def register_user(payload: RegisterPayload, background_tasks: BackgroundTa
 # ==========================================
 @router.post("/verify-otp")
 async def verify_otp(payload: VerifyOTPPayload):
-    if payload.email not in TEMP_OTP_STORE:
+    clean_email_address = sanitize_email(payload.email)
+
+    if clean_email_address not in TEMP_OTP_STORE:
         raise HTTPException(status_code=404, detail="No pending registration found for this email.")
 
-    stored_data = TEMP_OTP_STORE[payload.email]
+    stored_data = TEMP_OTP_STORE[clean_email_address]
 
     if stored_data["otp"] != payload.otp:
         raise HTTPException(status_code=400, detail="Invalid OTP! Please try again.")
@@ -179,13 +213,13 @@ async def verify_otp(payload: VerifyOTPPayload):
     
     new_user = {
         "username": stored_data["username"],
-        "email": payload.email,
+        "email": clean_email_address, # DB mein saaf wali email jayegi
         "password": stored_data["password_hash"],
         "api_key": api_key
     }
     
     await create_user(new_user)
-    del TEMP_OTP_STORE[payload.email]
+    del TEMP_OTP_STORE[clean_email_address]
 
     return {"status": "success", "message": f"Account created successfully! Welcome {stored_data['username']} 🚀"}
 
@@ -207,7 +241,7 @@ async def login_user(payload: LoginPayload):
     return {"status": "success", "message": "Login successful! Welcome back.", "api_key": user["api_key"]}
 
 # ==========================================
-# 4. FORGOT PASSWORD (Sends the new template)
+# 4. FORGOT PASSWORD
 # ==========================================
 @router.post("/forgot-password")
 async def forgot_password(payload: ForgotPasswordPayload, background_tasks: BackgroundTasks):
@@ -220,7 +254,6 @@ async def forgot_password(payload: ForgotPasswordPayload, background_tasks: Back
     reset_otp = random.randint(100000, 999999)
     TEMP_OTP_STORE[f"reset_{payload.username}"] = reset_otp
     
-    # Naya wala security email bhej raha hai yahan
     background_tasks.add_task(send_reset_otp_email, user_email, payload.username, reset_otp)
 
     return {"status": "success", "message": f"A password reset OTP has been sent to the registered email for {payload.username}."}
@@ -240,9 +273,7 @@ async def reset_password(payload: ResetPasswordPayload):
 
     new_hash = hash_password(payload.new_password)
     
-    # MongoDB mein password update maar do
     await update_user_password(payload.username, new_hash)
-    
     del TEMP_OTP_STORE[store_key]
 
     return {"status": "success", "message": "✅ Password has been reset successfully! You can now login with your new password."}
