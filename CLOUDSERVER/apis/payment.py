@@ -13,7 +13,7 @@ from CLOUDSERVER.database.database import tickets_collection # 🚨 NAYA IMPORT 
 from CLOUDSERVER.auth.verify import verify_api_key
 
 # 🚀 NAYA IMPORT TRANSACTION HISTORY KE LIYE
-from CLOUDSERVER.database.payment import get_user_transaction_history
+from CLOUDSERVER.database.deploys import get_user_transaction_history
 
 router = APIRouter()
 
