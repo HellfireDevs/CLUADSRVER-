@@ -24,4 +24,7 @@ deploys_collection = db["deploys"]
 # 🔥 Naya Collection Support Tickets ke liye
 tickets_collection = db["tickets"] 
 
+# 💸 Naya Collection Payments / Transactions ke liye
+payments_collection = db["payments"]
+
 print("✅ [DB] MongoDB Database connection initialized and collections mapped!")
