@@ -7,6 +7,7 @@ import random
 import os
 import hashlib
 from dotenv import load_dotenv
+import httpx # 🛡️ NEW: Turnstile verify karne ke liye
 
 # 🚀 Naya MongoDB Import
 from CLOUDSERVER.database.user import create_user, get_user_by_username, get_user_by_email, update_user_password
@@ -20,7 +21,7 @@ router = APIRouter()
 # ==========================================
 TEMP_OTP_STORE = {} # Jab tak OTP verify nahi hota, data memory mein rahega
 
-# 🛑 Blocked Temp Mail Domains (Isko tu apne hisaab se aur badha sakta hai)
+# 🛑 Blocked Temp Mail Domains
 BLOCKED_DOMAINS = {
     "mailinator.com", "10minutemail.com", "tempmail.com", "temp-mail.org", 
     "guerrillamail.com", "yopmail.com", "throwawaymail.com", "dispostable.com", 
@@ -50,6 +51,26 @@ def sanitize_email(email: str) -> str:
 # Password Hashing
 def hash_password(password: str):
     return hashlib.sha256(password.encode()).hexdigest()
+
+# ==========================================
+# 🤖 CLOUDFLARE TURNSTILE VERIFICATION
+# ==========================================
+async def verify_turnstile(token: str):
+    secret = os.getenv("CLOUDFLARE_SECRET_KEY")
+    # Agar secret key nahi hai (testing time), toh pass hone do warna sab atak jayega
+    if not secret:
+        print("⚠️ Warning: CLOUDFLARE_SECRET_KEY is missing in .env. Skipping captcha check.")
+        return True 
+
+    url = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+    
+    async with httpx.AsyncClient() as client:
+        response = await client.post(url, data={
+            "secret": secret,
+            "response": token
+        })
+        res = response.json()
+        return res.get("success", False)
 
 # ==========================================
 # 📧 1. REGISTRATION EMAIL TEMPLATE
@@ -147,8 +168,9 @@ def send_reset_otp_email(receiver_email: str, username: str, otp: int):
 # ==========================================
 class RegisterPayload(BaseModel):
     username: str
-    email: str # EmailStr ki jagah str rakha taaki pehle sanitize kar sakein
+    email: str 
     password: str
+    captcha_token: str # 🛡️ NEW: Captcha token from frontend
 
 class VerifyOTPPayload(BaseModel):
     email: str
@@ -167,10 +189,16 @@ class ResetPasswordPayload(BaseModel):
     new_password: str
 
 # ==========================================
-# 1. REGISTER & SEND OTP
+# 1. REGISTER & SEND OTP (With Turnstile Lock)
 # ==========================================
 @router.post("/register")
 async def register_user(payload: RegisterPayload, background_tasks: BackgroundTasks):
+    
+    # 🤖 Step 0: VERIFY CAPTCHA FIRST!
+    is_human = await verify_turnstile(payload.captcha_token)
+    if not is_human:
+        raise HTTPException(status_code=400, detail="Robot detection failed! Tu bot hai kya? 🤖")
+
     # 🛡️ Step 1: Clean the email (removes dots, blocks temp mails)
     clean_email_address = sanitize_email(payload.email)
 
@@ -187,7 +215,7 @@ async def register_user(payload: RegisterPayload, background_tasks: BackgroundTa
         "username": payload.username,
         "password_hash": hash_password(payload.password),
         "otp": otp,
-        "original_email": payload.email # Mails bhejte waqt asli ID use karenge
+        "original_email": payload.email 
     }
 
     background_tasks.add_task(send_otp_email, payload.email, payload.username, otp)
@@ -241,7 +269,7 @@ async def login_user(payload: LoginPayload):
     return {"status": "success", "message": "Login successful! Welcome back.", "api_key": user["api_key"]}
 
 # ==========================================
-# 4. FORGOT PASSWORD
+# 4. FOR ভাগে PASSWORD
 # ==========================================
 @router.post("/forgot-password")
 async def forgot_password(payload: ForgotPasswordPayload, background_tasks: BackgroundTasks):
