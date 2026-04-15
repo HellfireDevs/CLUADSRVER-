@@ -7,8 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from CLOUDSERVER.auth import auth_api
 from CLOUDSERVER.apis import (
     deploy, restart, status, ping, 
-    env_manager, services, logs, 
-    payment, github, account, support  # 🔥 Naye modules add ho gaye!
+    envmanager, services, logs,  # 🔥 FIXED: envmanager (bina underscore ke)
+    payment, github, account, support
 )
 
 app = FastAPI(
@@ -42,7 +42,7 @@ app.include_router(deploy.router, prefix="/api", tags=["Deployment & Webhooks"])
 app.include_router(restart.router, prefix="/api", tags=["Process Management"])
 app.include_router(status.router, prefix="/api", tags=["System Status"])
 app.include_router(ping.router, prefix="/api", tags=["Health & Uptime"])
-app.include_router(env_manager.router, prefix="/api", tags=["Environment Variables"])
+app.include_router(envmanager.router, prefix="/api", tags=["Environment Variables & Repo Updates"]) # 🔥 FIXED
 
 # 3. User Dashboard & Profile Data
 app.include_router(services.router, prefix="/api", tags=["User Dashboard"])
