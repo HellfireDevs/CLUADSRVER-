@@ -8,10 +8,10 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
 # Server Level Tools
-from CLOUDSERVER.core_utils.server_ops import pull_latest_code, restart_pm2, check_pm2_exists, stop_pm2, install_requirements
+from CLOUDSERVER.core_utils.server_ops import pull_latest_code, restart_pm2, check_pm2_exists, stop_pm2, install_requirements, clear_pm2_logs
 
-# 🚀 MongoDB Database Imports (🔥 Yahan toggle_auto_deploy import kiya hai)
-from CLOUDSERVER.database.deploys import register_new_bot, get_bot_by_repo, check_pm2_name_in_db, get_bot_by_name, toggle_auto_deploy
+# 🚀 MongoDB Database Imports
+from CLOUDSERVER.database.deploys import register_new_bot, get_bot_by_repo, check_pm2_name_in_db, get_bot_by_name, toggle_auto_deploy, set_update_pending
 from CLOUDSERVER.database.user import get_user_by_username # 📧 User email aur GitHub Token nikalne ke liye
 
 # 🛡️ Security Import
@@ -83,9 +83,9 @@ class NewDeployPayload(BaseModel):
 
 class ActionPayload(BaseModel):
     app_name: str
-    action: str # "stop", "restart", "reset"
+    action: str # "stop", "restart", "reset", "clear_logs", "git_pull"
 
-class AutoDeployTogglePayload(BaseModel): # 🔥 NAYA MODEL
+class AutoDeployTogglePayload(BaseModel): 
     app_name: str
     status: bool
 
@@ -169,7 +169,8 @@ async def create_new_deployment(
         "use_docker": payload.use_docker,
         "start_cmd": payload.start_cmd,
         "owner": current_user,
-        "auto_deploy": True # Default Auto-deploy ON
+        "auto_deploy": True,
+        "update_pending": False # 🔥 NAYA DB FIELD Default
     }
     await register_new_bot(bot_data)
 
@@ -198,11 +199,13 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks, x_
         bot_info = await get_bot_by_repo(incoming_repo_name)
         if not bot_info: return {"status": "ignored"}
             
-        # 🔥 YAHAN CHECK KARO: Agar user ne Auto-Deploy OFF rakha hai, toh deploy mat karo!
+        # 🔥 SMART LOGIC: Agar Auto-Deploy OFF hai, toh DB mein flag set kar do
         if bot_info.get("auto_deploy") is False:
-            print(f"🚫 Auto-deploy is OFF for {bot_info['pm2_name']}. Ignoring push.")
-            return {"status": "ignored", "message": "Auto-deploy is disabled."}
+            print(f"🔔 Auto-deploy is OFF for {bot_info['pm2_name']}. Marking update as pending.")
+            await set_update_pending(bot_info['pm2_name'], True) 
+            return {"status": "success", "message": "Update detected, waiting for manual approval."}
 
+        # Agar ON hai toh normal pull maro
         background_tasks.add_task(
             run_background_update, 
             bot_info["folder_path"], bot_info["pm2_name"], bot_info.get("repo_url"),
@@ -213,7 +216,7 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks, x_
         raise HTTPException(status_code=500, detail=str(e))
 
 # ==========================================
-# 3. DASHBOARD CONTROLS (Stop, Restart, Reset)
+# 3. DASHBOARD CONTROLS (Stop, Restart, Reset, Clear Logs, Git Pull)
 # ==========================================
 @router.post("/action")
 async def bot_actions(payload: ActionPayload, background_tasks: BackgroundTasks, current_user: str = Depends(verify_api_key)):
@@ -224,7 +227,6 @@ async def bot_actions(payload: ActionPayload, background_tasks: BackgroundTasks,
 
     try:
         if payload.action == "stop":
-            # PM2 Stop API freeze nahi karta, isko as-is chhod sakte hain ya isko bhi to_thread mein daal sakte hain
             await asyncio.to_thread(stop_pm2, payload.app_name)
             return {"status": "success", "message": "Bot Stopped!"}
             
@@ -233,6 +235,9 @@ async def bot_actions(payload: ActionPayload, background_tasks: BackgroundTasks,
             return {"status": "success", "message": "Bot Restarted!"}
             
         elif payload.action == "reset":
+            # 🔥 NAYA: Jab manual reset karega toh pending flag hata do
+            await set_update_pending(payload.app_name, False)
+            
             # Pura code dubara pull karega aur requirements wapas install karega
             background_tasks.add_task(
                 run_background_update, 
@@ -240,6 +245,27 @@ async def bot_actions(payload: ActionPayload, background_tasks: BackgroundTasks,
                 bot_info.get("use_docker"), bot_info.get("start_cmd"), current_user, True
             )
             return {"status": "success", "message": "Reset & Redeploy initiated!"}
+            
+        # 🧹 NAYA ACTION: Logs Flush Karne Ke Liye
+        elif payload.action == "clear_logs":
+            success = await asyncio.to_thread(clear_pm2_logs, payload.app_name)
+            if success:
+                return {"status": "success", "message": f"Logs for {payload.app_name} cleared successfully!"}
+            else:
+                raise HTTPException(status_code=500, detail="Failed to clear logs.")
+                
+        # 🔄 NAYA ACTION: Manual Git Pull (Saves requirements installation time vs Reset)
+        elif payload.action == "git_pull":
+            # Flag hamesha clear karo kyunki code ab update ho jayega
+            await set_update_pending(payload.app_name, False)
+            
+            background_tasks.add_task(
+                run_background_update, 
+                bot_info["folder_path"], bot_info["pm2_name"], bot_info.get("repo_url"),
+                bot_info.get("use_docker"), bot_info.get("start_cmd"), current_user, False # is_reset=False (requirements nahi karega)
+            )
+            return {"status": "success", "message": "Pulling latest code & Restarting..."}
+
         else:
             raise HTTPException(status_code=400, detail="Invalid action")
             
@@ -247,13 +273,12 @@ async def bot_actions(payload: ActionPayload, background_tasks: BackgroundTasks,
         raise HTTPException(status_code=500, detail=str(e))
 
 # ==========================================
-# 4. TOGGLE AUTO-DEPLOY (🔥 NAYA ENDPOINT)
+# 4. TOGGLE AUTO-DEPLOY 
 # ==========================================
 @router.post("/toggle-autodeploy")
 async def toggle_webhook_status(payload: AutoDeployTogglePayload, current_user: str = Depends(verify_api_key)):
     bot_info = await get_bot_by_name(payload.app_name)
     
-    # Security Check: Sirf malik hi toggle kar paye
     if not bot_info or bot_info.get("owner") != current_user:
         raise HTTPException(status_code=403, detail="Unauthorized or Bot not found!")
         
@@ -266,7 +291,6 @@ async def toggle_webhook_status(payload: AutoDeployTogglePayload, current_user: 
 # 🛠️ EDIT POINTS (DB Update Functions)
 # ==========================================
 async def update_bot_repo_details(app_name: str, new_repo_url: str, new_start_cmd: str, new_repo_name: str):
-    """User agar Repo URL ya Start Command change karta hai toh ye DB update karega"""
     from CLOUDSERVER.database.database import deploys_collection
     
     result = await deploys_collection.update_one(
@@ -280,7 +304,6 @@ async def update_bot_repo_details(app_name: str, new_repo_url: str, new_start_cm
     return result.modified_count > 0
 
 async def update_bot_env_vars(app_name: str, env_data: dict):
-    """MongoDB mein bhi env variables ka backup rakhenge taaki Frontend pe show ho sakein"""
     from CLOUDSERVER.database.database import deploys_collection
     
     result = await deploys_collection.update_one(
@@ -290,9 +313,8 @@ async def update_bot_env_vars(app_name: str, env_data: dict):
     return result.modified_count > 0
     
 async def delete_bot_from_db(app_name: str):
-    """MongoDB se bot ka record hamesha ke liye delete kar dega"""
     from CLOUDSERVER.database.database import deploys_collection
     
     result = await deploys_collection.delete_one({"pm2_name": app_name})
     return result.deleted_count > 0
-            
+        
