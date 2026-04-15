@@ -6,4 +6,4 @@ GitPython
 aiohttp
 email-validator
 motor
-
+psutil
