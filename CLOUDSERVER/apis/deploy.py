@@ -11,7 +11,7 @@ from CLOUDSERVER.core_utils.server_ops import pull_latest_code, restart_pm2, che
 
 # 🚀 MongoDB Database Imports
 from CLOUDSERVER.database.deploys import register_new_bot, get_bot_by_repo, check_pm2_name_in_db, get_bot_by_name
-from CLOUDSERVER.database.user import get_user_by_username # 📧 User ka email nikalne ke liye
+from CLOUDSERVER.database.user import get_user_by_username # 📧 User email aur GitHub Token nikalne ke liye
 
 # 🛡️ Security Import
 from CLOUDSERVER.auth.verify import verify_api_key
@@ -76,32 +76,41 @@ class NewDeployPayload(BaseModel):
     repo_url: str       
     repo_name: str      
     app_name: str       
-    folder_path: str    
+    folder_path: str = ""  # Frontend se aayega toh ignore karenge, hum apna path banayenge
     use_docker: bool = False      
     start_cmd: Optional[str] = None 
 
 class ActionPayload(BaseModel):
     app_name: str
-    action: str # "start", "stop", "restart", "reset"
+    action: str # "stop", "restart", "reset"
 
 # ==========================================
-# ⚙️ BACKGROUND DEPLOYMENT ENGINE
+# ⚙️ BACKGROUND DEPLOYMENT ENGINE (With Private Repo Magic)
 # ==========================================
 async def run_background_update(repo_path: str, pm2_name: str, repo_url: str, use_docker: bool, start_cmd: str, owner: str, is_reset: bool = False):
     """Background engine jo Code Pull karega, Requirements install karega, aur Deploy marega"""
     print(f"🚀 [DEPLOY ENGINE] Initializing for {pm2_name}...")
     
+    # 1. User ka data nikalo (Email bhejne ke liye aur GitHub Token ke liye)
     user_info = await get_user_by_username(owner)
-    user_email = user_info["email"] if user_info else None
+    user_email = user_info.get("email") if user_info else None
+    github_token = user_info.get("github_token") if user_info else None
+
+    # 🐙 SMART PRIVATE REPO TOKEN INJECTOR
+    secure_repo_url = repo_url
+    if github_token and repo_url and "github.com" in repo_url and "@github.com" not in repo_url:
+        print("🔐 [GITHUB] Private Repo detected. Injecting secure Access Token...")
+        secure_repo_url = repo_url.replace("https://github.com/", f"https://{github_token}@github.com/")
 
     try:
-        # Step 1: Smart pull code from GitHub
-        pull_latest_code(repo_path, repo_url)
+        # Step 1: Smart pull code from GitHub (Token wale URL ke sath)
+        pull_latest_code(repo_path, secure_repo_url)
         
-        # Step 2: Agar Reset/Redeploy hai, ya naya bot hai, toh requirements download karo
+        # Step 2: Agar Reset/Redeploy hai, ya naya bot hai, toh requirements download karo (VENV Auto-handled in server_ops)
         if not use_docker and is_reset:
             print(f"📦 [DEPLOY ENGINE] Installing dependencies for {pm2_name}...")
-            install_requirements(repo_path) # Ye function tujhe server_ops.py me banana hoga (pip install -r requirements.txt)
+            # Ye ab server_ops.py ke pull_latest_code mein handle ho raha hai, but incase force reset karna ho
+            install_requirements(repo_path) 
 
         # Step 3: PM2 ya Docker Start
         restart_pm2(pm2_name, repo_path, use_docker, start_cmd)
@@ -118,7 +127,7 @@ async def run_background_update(repo_path: str, pm2_name: str, repo_url: str, us
             send_deployment_email(user_email, pm2_name, "failed", error_msg)
 
 # ==========================================
-# 1. NEW DEPLOYMENT API
+# 1. NEW DEPLOYMENT API (Auto Folder Path)
 # ==========================================
 @router.post("/deploy-new")
 async def create_new_deployment(
@@ -135,12 +144,15 @@ async def create_new_deployment(
     if await check_pm2_name_in_db(payload.app_name):
         raise HTTPException(status_code=400, detail=f"❌ App Name '{payload.app_name}' database mein pehle se taken hai!")
 
-    # Save to Database
+    # 🧠 SMART PATH GENERATOR (Frontend ka kachra path ignore!)
+    auto_folder_path = f"/root/nex_cloud_apps/{current_user}/{payload.app_name}"
+
+    # Save to Database (Clean URL save karenge, token wala nahi taaki DB secure rahe)
     bot_data = {
         "repo_url": payload.repo_url,    
         "repo_name": payload.repo_name,  
         "pm2_name": payload.app_name,
-        "folder_path": payload.folder_path,
+        "folder_path": auto_folder_path, # <--- Auto path injected here!
         "use_docker": payload.use_docker,
         "start_cmd": payload.start_cmd,
         "owner": current_user  
@@ -150,7 +162,7 @@ async def create_new_deployment(
     # Naya bot direct deploy pe laga do (First Time Install = True)
     background_tasks.add_task(
         run_background_update, 
-        payload.folder_path, payload.app_name, payload.repo_url, 
+        auto_folder_path, payload.app_name, payload.repo_url, 
         payload.use_docker, payload.start_cmd, current_user, True
     )
 
@@ -186,7 +198,7 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks, x_
 # ==========================================
 @router.post("/action")
 async def bot_actions(payload: ActionPayload, background_tasks: BackgroundTasks, current_user: str = Depends(verify_api_key)):
-    bot_info = await get_bot_by_name(payload.app_name) # Naya function DB mein banaiyo
+    bot_info = await get_bot_by_name(payload.app_name)
     
     if not bot_info or bot_info["owner"] != current_user:
         raise HTTPException(status_code=403, detail="Unauthorized or Bot not found!")
