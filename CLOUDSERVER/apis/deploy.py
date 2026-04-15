@@ -10,8 +10,8 @@ from email.mime.multipart import MIMEMultipart
 # Server Level Tools
 from CLOUDSERVER.core_utils.server_ops import pull_latest_code, restart_pm2, check_pm2_exists, stop_pm2, install_requirements
 
-# 🚀 MongoDB Database Imports
-from CLOUDSERVER.database.deploys import register_new_bot, get_bot_by_repo, check_pm2_name_in_db, get_bot_by_name
+# 🚀 MongoDB Database Imports (🔥 Yahan toggle_auto_deploy import kiya hai)
+from CLOUDSERVER.database.deploys import register_new_bot, get_bot_by_repo, check_pm2_name_in_db, get_bot_by_name, toggle_auto_deploy
 from CLOUDSERVER.database.user import get_user_by_username # 📧 User email aur GitHub Token nikalne ke liye
 
 # 🛡️ Security Import
@@ -84,6 +84,10 @@ class NewDeployPayload(BaseModel):
 class ActionPayload(BaseModel):
     app_name: str
     action: str # "stop", "restart", "reset"
+
+class AutoDeployTogglePayload(BaseModel): # 🔥 NAYA MODEL
+    app_name: str
+    status: bool
 
 # ==========================================
 # ⚙️ BACKGROUND DEPLOYMENT ENGINE (NON-BLOCKING FIX)
@@ -164,7 +168,8 @@ async def create_new_deployment(
         "folder_path": auto_folder_path, 
         "use_docker": payload.use_docker,
         "start_cmd": payload.start_cmd,
-        "owner": current_user  
+        "owner": current_user,
+        "auto_deploy": True # Default Auto-deploy ON
     }
     await register_new_bot(bot_data)
 
@@ -193,6 +198,11 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks, x_
         bot_info = await get_bot_by_repo(incoming_repo_name)
         if not bot_info: return {"status": "ignored"}
             
+        # 🔥 YAHAN CHECK KARO: Agar user ne Auto-Deploy OFF rakha hai, toh deploy mat karo!
+        if bot_info.get("auto_deploy") is False:
+            print(f"🚫 Auto-deploy is OFF for {bot_info['pm2_name']}. Ignoring push.")
+            return {"status": "ignored", "message": "Auto-deploy is disabled."}
+
         background_tasks.add_task(
             run_background_update, 
             bot_info["folder_path"], bot_info["pm2_name"], bot_info.get("repo_url"),
@@ -235,6 +245,22 @@ async def bot_actions(payload: ActionPayload, background_tasks: BackgroundTasks,
             
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# ==========================================
+# 4. TOGGLE AUTO-DEPLOY (🔥 NAYA ENDPOINT)
+# ==========================================
+@router.post("/toggle-autodeploy")
+async def toggle_webhook_status(payload: AutoDeployTogglePayload, current_user: str = Depends(verify_api_key)):
+    bot_info = await get_bot_by_name(payload.app_name)
+    
+    # Security Check: Sirf malik hi toggle kar paye
+    if not bot_info or bot_info.get("owner") != current_user:
+        raise HTTPException(status_code=403, detail="Unauthorized or Bot not found!")
+        
+    await toggle_auto_deploy(payload.app_name, payload.status)
+    state_str = "ON" if payload.status else "OFF"
+    
+    return {"status": "success", "message": f"✅ Auto-Deploy for {payload.app_name} turned {state_str}!"}
         
 # ==========================================
 # 🛠️ EDIT POINTS (DB Update Functions)
@@ -269,4 +295,4 @@ async def delete_bot_from_db(app_name: str):
     
     result = await deploys_collection.delete_one({"pm2_name": app_name})
     return result.deleted_count > 0
-    
+            
