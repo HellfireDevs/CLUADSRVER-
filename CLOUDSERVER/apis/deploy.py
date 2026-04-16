@@ -232,9 +232,8 @@ async def deploy_vip_pm2(payload: VIPPM2DeployPayload, background_tasks: Backgro
     
     # 🔥 TELEGRAM MAGIC FIX HERE 🔥
     if not user_info.get("pm2_access", False):
-        # Admin ko background mein chupke se Telegram message bhej do
-        background_tasks.add_task(notify_admin_on_telegram, current_user, payload.app_name)
-        # User ko naya warning message dikhao
+        # 🔥 FIX: Exception raise hone se pehle thread banaya
+        asyncio.create_task(asyncio.to_thread(notify_admin_on_telegram, current_user, payload.app_name))
         raise HTTPException(
             status_code=403, 
             detail="🔒 VIP PM2 Access Restricted! An approval request has been sent to the Admin on Telegram. Please wait for approval."
@@ -418,4 +417,4 @@ async def delete_bot_from_db(app_name: str):
     from CLOUDSERVER.database.database import deploys_collection
     result = await deploys_collection.delete_one({"pm2_name": app_name})
     return result.deleted_count > 0
-                                    
+                            
