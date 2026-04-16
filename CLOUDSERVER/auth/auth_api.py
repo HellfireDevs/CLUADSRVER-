@@ -212,13 +212,23 @@ class ResetPasswordPayload(BaseModel):
     new_password: str
 
 # ==========================================
-# 🔍 CHECK USERNAME ENDPOINT (For React Live Feedback)
+# 🔍 CHECK USERNAME ENDPOINT (🔥 Smart Update)
 # ==========================================
 @router.get("/check-username")
 async def check_username_availability(username: str):
-    user = await get_user_by_username(username.lower().strip())
+    clean_user = username.lower().strip()
+    
+    # 1. Main Database mein check karo
+    user = await get_user_by_username(clean_user)
     if user:
         return {"available": False}
+        
+    # 2. OTP Store mein check karo (Jo users OTP verification ke liye ruke hain)
+    for data in TEMP_OTP_STORE.values():
+        # Check karte hain ki value dictionary hai ya nahi (kyunki reset-password me OTP int hota hai)
+        if isinstance(data, dict) and data.get("username") == clean_user:
+            return {"available": False} 
+            
     return {"available": True}
 
 # ==========================================
@@ -375,4 +385,3 @@ async def reset_password(payload: ResetPasswordPayload):
     del TEMP_OTP_STORE[store_key]
 
     return {"status": "success", "message": "✅ Password has been reset successfully! You can now login with your new password."}
-    
