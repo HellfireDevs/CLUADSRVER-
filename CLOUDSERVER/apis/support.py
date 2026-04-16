@@ -5,14 +5,10 @@ from datetime import datetime
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request
 
-# 🔥 FIX: users_collection ko bhi import kar liya taaki Approve button DB update kar sake
 from CLOUDSERVER.database.database import tickets_collection, users_collection
 from CLOUDSERVER.auth.verify import verify_api_key
 
 router = APIRouter()
-
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_ADMIN_ID = os.getenv("TELEGRAM_ADMIN_ID")
 
 def generate_ticket_id():
     return "TKT-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
@@ -22,7 +18,11 @@ def generate_ticket_id():
 # ==========================================
 async def send_vip_access_request_tg(username: str, app_name: str):
     """Deploy.py se call hoga jab koi bina permission VIP engine use karega"""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_ADMIN_ID:
+    # 🔥 FIX: Token ab function ke andar fetch hoga taaki khali (None) na rahe!
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    admin_id = os.getenv("TELEGRAM_ADMIN_ID")
+    
+    if not bot_token or not admin_id:
         print("⚠️ Telegram Token ya TELEGRAM_ADMIN_ID set nahi hai .env mein!")
         return
     
@@ -33,7 +33,6 @@ async def send_vip_access_request_tg(username: str, app_name: str):
         f"⚠️ <i>User is trying to deploy using the VIP PM2 Engine but doesn't have access.</i>"
     )
     
-    # 🔥 NAYA: Approve aur Reject ke mast buttons
     reply_markup = {
         "inline_keyboard": [
             [
@@ -43,12 +42,12 @@ async def send_vip_access_request_tg(username: str, app_name: str):
         ]
     }
     
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     json_payload = {
-        "chat_id": TELEGRAM_ADMIN_ID, 
+        "chat_id": admin_id, 
         "text": msg_text, 
         "parse_mode": "HTML",
-        "reply_markup": reply_markup # Buttons yahan attach ho gaye
+        "reply_markup": reply_markup 
     }
     
     async with httpx.AsyncClient() as client:
@@ -64,6 +63,7 @@ async def send_vip_access_request_tg(username: str, app_name: str):
 @router.post("/tg-webhook")
 async def telegram_webhook(request: Request):
     """Jab tu Telegram pe Approve/Reject dabayega toh Telegram is endpoint pe data bhejega"""
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
     try:
         update = await request.json()
         
@@ -82,7 +82,7 @@ async def telegram_webhook(request: Request):
                 await users_collection.update_one({"username": username}, {"$set": {"pm2_access": True}})
                 
                 # 2. Telegram message ko edit karke 'Approved' likh do
-                url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText"
+                url = f"https://api.telegram.org/bot{bot_token}/editMessageText"
                 payload = {
                     "chat_id": chat_id,
                     "message_id": message_id,
@@ -96,7 +96,7 @@ async def telegram_webhook(request: Request):
             elif callback_data.startswith("vip_reject_"):
                 username = callback_data.replace("vip_reject_", "")
                 
-                url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText"
+                url = f"https://api.telegram.org/bot{bot_token}/editMessageText"
                 payload = {
                     "chat_id": chat_id,
                     "message_id": message_id,
@@ -121,6 +121,10 @@ async def create_ticket(
     screenshot: UploadFile = File(None),
     current_user: str = Depends(verify_api_key)
 ):
+    # 🔥 FIX: Token function ke andar fetch hoga
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    admin_id = os.getenv("TELEGRAM_ADMIN_ID")
+
     ticket_id = generate_ticket_id()
     
     msg_text = (
@@ -136,14 +140,14 @@ async def create_ticket(
     
     async with httpx.AsyncClient() as client:
         if screenshot and screenshot.filename:
-            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+            url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
             file_bytes = await screenshot.read()
             files = {"photo": (screenshot.filename, file_bytes, screenshot.content_type)}
-            data = {"chat_id": TELEGRAM_ADMIN_ID, "caption": msg_text, "parse_mode": "HTML"}
+            data = {"chat_id": admin_id, "caption": msg_text, "parse_mode": "HTML"}
             response = await client.post(url, data=data, files=files)
         else:
-            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-            json_payload = {"chat_id": TELEGRAM_ADMIN_ID, "text": msg_text, "parse_mode": "HTML"}
+            url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+            json_payload = {"chat_id": admin_id, "text": msg_text, "parse_mode": "HTML"}
             response = await client.post(url, json=json_payload)
             
         if response.status_code != 200:
