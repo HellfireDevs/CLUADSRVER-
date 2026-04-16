@@ -12,7 +12,8 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
 # Server Level Tools
-from CLOUDSERVER.core_utils.server_ops import pull_latest_code, restart_pm2, check_pm2_exists, stop_pm2, install_requirements, clear_pm2_logs
+# 🔥 FIX: 'quick_restart' import kiya gaya hai aur 'stop_pm2' ab docker argument lega
+from CLOUDSERVER.core_utils.server_ops import pull_latest_code, restart_pm2, check_pm2_exists, stop_pm2, install_requirements, clear_pm2_logs, quick_restart
 
 # 🚀 MongoDB Database Imports
 from CLOUDSERVER.database.deploys import register_new_bot, get_bot_by_repo, check_pm2_name_in_db, get_bot_by_name, toggle_auto_deploy, set_update_pending
@@ -303,13 +304,18 @@ async def bot_actions(payload: ActionPayload, background_tasks: BackgroundTasks,
     if not bot_info or bot_info["owner"] != current_user:
         raise HTTPException(status_code=403, detail="Unauthorized or Bot not found!")
 
+    # 🔥 FIX: Pata karo ki bot Docker wala hai ya normal
+    use_docker = bot_info.get("use_docker", False)
+
     try:
         if payload.action == "stop":
-            await asyncio.to_thread(stop_pm2, payload.app_name)
+            # 🔥 FIX: Pass use_docker to stop function
+            await asyncio.to_thread(stop_pm2, payload.app_name, use_docker)
             return {"status": "success", "message": "Bot Stopped!"}
             
         elif payload.action == "restart":
-            await asyncio.to_thread(restart_pm2, payload.app_name, bot_info["folder_path"], bot_info.get("use_docker"), bot_info.get("start_cmd"))
+            # 🔥 FIX: QUICK RESTART call kiya gaya hai taaki faltu wapas build na ho
+            await asyncio.to_thread(quick_restart, payload.app_name, use_docker)
             return {"status": "success", "message": "Bot Restarted!"}
             
         elif payload.action == "reset":
@@ -377,4 +383,4 @@ async def delete_bot_from_db(app_name: str):
     from CLOUDSERVER.database.database import deploys_collection
     result = await deploys_collection.delete_one({"pm2_name": app_name})
     return result.deleted_count > 0
-    
+        
