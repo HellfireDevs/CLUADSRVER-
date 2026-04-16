@@ -23,30 +23,22 @@ router = APIRouter()
 # ==========================================
 TEMP_OTP_STORE = {} # Jab tak OTP verify nahi hota, data memory mein rahega
 
-# 🛑 Blocked Temp Mail Domains
-BLOCKED_DOMAINS = {
-    "mailinator.com", "10minutemail.com", "tempmail.com", "temp-mail.org", 
-    "guerrillamail.com", "yopmail.com", "throwawaymail.com", "dispostable.com", 
-    "getairmail.com", "trashmail.com", "sharklasers.com", "nada.ltd"
-}
-
-# 🛡️ Smart Email Normalizer (Dot/Plus trick killer)
+# 🛡️ Smart Email Normalizer (Strictly @gmail.com & Dot/Plus trick killer)
 def sanitize_email(email: str) -> str:
     email = email.lower().strip()
-    username, domain = email.split('@')
+    if '@' not in email:
+        raise HTTPException(status_code=400, detail="Invalid email format!")
+        
+    username, domain = email.split('@', 1)
 
-    # Agar temp mail hai toh block karo
-    if domain in BLOCKED_DOMAINS:
-        raise HTTPException(status_code=400, detail="❌ Disposable/Temp emails are not allowed! Asli email use kar bhai.")
+    # 🔥 STRICT GMAIL POLICY: Sirf gmail allow karenge, baaki sab bhaad mein jaye!
+    if domain not in ["gmail.com", "googlemail.com"]:
+        raise HTTPException(status_code=400, detail="❌ Only @gmail.com addresses are allowed!")
 
     # Gmail Dot aur Plus trick fixer
-    if domain in ["gmail.com", "googlemail.com"]:
-        # '+' ke baad ka sab kuch uda do
-        username = username.split('+')[0]
-        # Saare '.' (dots) uda do
-        username = username.replace('.', '')
-        # googlemail ko bhi gmail maan lo
-        domain = "gmail.com"
+    username = username.split('+')[0]
+    username = username.replace('.', '')
+    domain = "gmail.com"
 
     return f"{username}@{domain}"
 
@@ -59,7 +51,6 @@ def hash_password(password: str):
 # ==========================================
 async def verify_turnstile(token: str):
     secret = os.getenv("CLOUDFLARE_SECRET_KEY")
-    # Agar secret key nahi hai (testing time), toh pass hone do warna sab atak jayega
     if not secret:
         print("⚠️ Warning: CLOUDFLARE_SECRET_KEY is missing in .env. Skipping captcha check.")
         return True 
@@ -128,7 +119,6 @@ def send_reset_otp_email(receiver_email: str, username: str, otp: int):
     _send_email_smtp(receiver_email, subject, html_content, "Cloud Security")
 
 def send_welcome_email(receiver_email: str, username: str):
-    """Naya Account banne par Congratulations mail"""
     subject = "🎉 Welcome to NEX CLOUD!"
     html_content = f"""
     <html>
@@ -147,7 +137,6 @@ def send_welcome_email(receiver_email: str, username: str):
     _send_email_smtp(receiver_email, subject, html_content, "NEX Cloud")
 
 def send_login_alert(receiver_email: str, username: str, ip_address: str):
-    """Naya login hone par security alert with IP & Location"""
     location = "Unknown"
     try:
         ip_data = requests.get(f"http://ip-api.com/json/{ip_address}", timeout=3).json()
@@ -178,7 +167,6 @@ def send_login_alert(receiver_email: str, username: str, ip_address: str):
     _send_email_smtp(receiver_email, subject, html_content, "Cloud Security")
 
 def _send_email_smtp(receiver_email: str, subject: str, html_content: str, from_name: str):
-    """Smtplib Helper function taaki code repeat na ho"""
     sender_email = os.getenv("SENDER_EMAIL")
     sender_password = os.getenv("SENDER_PASSWORD")
     if not sender_email or not sender_password: return
@@ -204,7 +192,7 @@ class RegisterPayload(BaseModel):
     username: str
     email: str 
     password: str
-    captcha_token: str # 🛡️ NEW: Captcha token from frontend
+    captcha_token: str 
 
 class VerifyOTPPayload(BaseModel):
     email: str
@@ -213,10 +201,10 @@ class VerifyOTPPayload(BaseModel):
 class LoginPayload(BaseModel):
     username: str
     password: str
-    captcha_token: str # 🛡️ NEW: Login mein bhi Captcha token aayega
+    captcha_token: str 
 
 class ForgotPasswordPayload(BaseModel):
-    username: str
+    username: str # Isme user username YA email dono daal sakta hai
 
 class ResetPasswordPayload(BaseModel):
     username: str
@@ -224,17 +212,26 @@ class ResetPasswordPayload(BaseModel):
     new_password: str
 
 # ==========================================
-# 1. REGISTER & SEND OTP (With Turnstile Lock)
+# 🔍 CHECK USERNAME ENDPOINT (For React Live Feedback)
+# ==========================================
+@router.get("/check-username")
+async def check_username_availability(username: str):
+    user = await get_user_by_username(username.lower().strip())
+    if user:
+        return {"available": False}
+    return {"available": True}
+
+# ==========================================
+# 1. REGISTER & SEND OTP
 # ==========================================
 @router.post("/register")
 async def register_user(payload: RegisterPayload, background_tasks: BackgroundTasks):
     
-    # 🤖 Step 0: VERIFY CAPTCHA FIRST!
     is_human = await verify_turnstile(payload.captcha_token)
     if not is_human:
         raise HTTPException(status_code=400, detail="Robot detection failed! Tu bot hai kya? 🤖")
 
-    # 🛡️ Step 1: Clean the email (removes dots, blocks temp mails)
+    # 🛡️ Email Sanitize aur Strict @gmail.com check
     clean_email_address = sanitize_email(payload.email)
 
     if await get_user_by_username(payload.username):
@@ -245,7 +242,6 @@ async def register_user(payload: RegisterPayload, background_tasks: BackgroundTa
 
     otp = random.randint(100000, 999999)
     
-    # Store with CLEAN email
     TEMP_OTP_STORE[clean_email_address] = {
         "username": payload.username,
         "password_hash": hash_password(payload.password),
@@ -262,7 +258,11 @@ async def register_user(payload: RegisterPayload, background_tasks: BackgroundTa
 # ==========================================
 @router.post("/verify-otp")
 async def verify_otp(payload: VerifyOTPPayload, background_tasks: BackgroundTasks):
-    clean_email_address = sanitize_email(payload.email)
+    # sanitize_email fail bhi ho sakta hai format galat hone pe
+    try:
+        clean_email_address = sanitize_email(payload.email)
+    except:
+        clean_email_address = payload.email.lower().strip()
 
     if clean_email_address not in TEMP_OTP_STORE:
         raise HTTPException(status_code=404, detail="No pending registration found for this email.")
@@ -276,16 +276,15 @@ async def verify_otp(payload: VerifyOTPPayload, background_tasks: BackgroundTask
     
     new_user = {
         "username": stored_data["username"],
-        "email": clean_email_address, # DB mein saaf wali email jayegi
+        "email": clean_email_address,
         "password": stored_data["password_hash"],
         "api_key": api_key,
-        "is_suspended": False, # Naya account active hoga
+        "is_suspended": False,
         "is_premium": False
     }
     
     await create_user(new_user)
     
-    # 🎉 SUCCESS: Welcome Email Background mein bhej do
     background_tasks.add_task(send_welcome_email, clean_email_address, stored_data["username"])
     
     del TEMP_OTP_STORE[clean_email_address]
@@ -293,12 +292,11 @@ async def verify_otp(payload: VerifyOTPPayload, background_tasks: BackgroundTask
     return {"status": "success", "message": f"Account created successfully! Welcome {stored_data['username']} 🚀"}
 
 # ==========================================
-# 3. LOGIN ENDPOINT (With Turnstile Lock & Alert)
+# 3. LOGIN ENDPOINT
 # ==========================================
 @router.post("/login")
 async def login_user(payload: LoginPayload, request: Request, background_tasks: BackgroundTasks):
 
-    # 🤖 Step 0: VERIFY CAPTCHA FIRST!
     is_human = await verify_turnstile(payload.captcha_token)
     if not is_human:
         raise HTTPException(status_code=400, detail="Robot detection failed! Tu bot hai kya? 🤖")
@@ -313,11 +311,9 @@ async def login_user(payload: LoginPayload, request: Request, background_tasks: 
     if user["password"] != provided_hash:
         raise HTTPException(status_code=401, detail="Incorrect Password!")
 
-    # 🚨 SECURITY ALERT: Login detect hua, email bhej do
     client_ip = request.client.host if request.client else "Unknown IP"
     background_tasks.add_task(send_login_alert, user["email"], payload.username, client_ip)
 
-    # 🔥 FIX: is_suspended aur is_premium frontend ko bhejo
     return {
         "status": "success", 
         "message": "Login successful! Welcome back.", 
@@ -328,29 +324,55 @@ async def login_user(payload: LoginPayload, request: Request, background_tasks: 
     }
 
 # ==========================================
-# 4. FORGOT PASSWORD
+# 4. FORGOT PASSWORD (Supports Username OR Email)
 # ==========================================
 @router.post("/forgot-password")
 async def forgot_password(payload: ForgotPasswordPayload, background_tasks: BackgroundTasks):
+    # Pehle username se dhoondo
     user = await get_user_by_username(payload.username)
     
     if not user:
-        raise HTTPException(status_code=404, detail="Username not found!")
+        # Agar username nahi mila, toh check karo shayad usne email dali ho
+        try:
+            clean_email = sanitize_email(payload.username)
+        except:
+            clean_email = payload.username.lower().strip()
+            
+        user = await get_user_by_email(clean_email)
+        
+    if not user:
+        raise HTTPException(status_code=404, detail="User or Email not found in our database!")
 
+    actual_username = user["username"]
     user_email = user["email"]
-    reset_otp = random.randint(100000, 999999)
-    TEMP_OTP_STORE[f"reset_{payload.username}"] = reset_otp
     
-    background_tasks.add_task(send_reset_otp_email, user_email, payload.username, reset_otp)
+    reset_otp = random.randint(100000, 999999)
+    TEMP_OTP_STORE[f"reset_{actual_username}"] = reset_otp
+    
+    background_tasks.add_task(send_reset_otp_email, user_email, actual_username, reset_otp)
 
-    return {"status": "success", "message": f"A password reset OTP has been sent to the registered email for {payload.username}."}
+    return {"status": "success", "message": f"A password reset OTP has been sent to the registered email for {actual_username}."}
 
 # ==========================================
 # 5. VERIFY RESET OTP & CHANGE PASSWORD
 # ==========================================
 @router.post("/reset-password")
 async def reset_password(payload: ResetPasswordPayload):
-    store_key = f"reset_{payload.username}"
+    # Yahan bhi dono check karte hain taaki frontend se email/username kuch bhi aaye pass ho jaye
+    user = await get_user_by_username(payload.username)
+    
+    if not user:
+        try:
+            clean_email = sanitize_email(payload.username)
+        except:
+            clean_email = payload.username.lower().strip()
+        user = await get_user_by_email(clean_email)
+        
+    if not user:
+        raise HTTPException(status_code=404, detail="User or Email not found!")
+
+    actual_username = user["username"]
+    store_key = f"reset_{actual_username}"
     
     if store_key not in TEMP_OTP_STORE:
         raise HTTPException(status_code=400, detail="No pending password reset request found, or OTP expired!")
@@ -360,7 +382,7 @@ async def reset_password(payload: ResetPasswordPayload):
 
     new_hash = hash_password(payload.new_password)
     
-    await update_user_password(payload.username, new_hash)
+    await update_user_password(actual_username, new_hash)
     del TEMP_OTP_STORE[store_key]
 
     return {"status": "success", "message": "✅ Password has been reset successfully! You can now login with your new password."}
