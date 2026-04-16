@@ -17,7 +17,7 @@ def append_log(folder_path: str, message: str):
         pass
 
 # ==========================================
-# 1. PM2 OPERATIONS (Check, Stop, Flush)
+# 1. PM2 & DOCKER OPERATIONS (Check, Stop, Restart, Flush)
 # ==========================================
 def check_pm2_exists(app_name: str) -> bool:
     """Check karega ki PM2 mein ye naam pehle se toh nahi chal raha"""
@@ -37,14 +37,33 @@ def check_pm2_exists(app_name: str) -> bool:
         print(f"❌ [PM2 CHECK ERROR]: {str(e)}")
         return False
 
-def stop_pm2(app_name: str):
-    """Dashboard se PM2 bot ko stop karne ke liye"""
-    print(f"🛑 [PM2] Stopping bot: {app_name}...")
+# 🔥 FIX: Ab ye Docker aur PM2 dono ko stop kar sakta hai
+def stop_pm2(app_name: str, use_docker: bool = False):
+    """Dashboard se bot ko stop karne ke liye (Docker & PM2 dono ke liye)"""
+    print(f"🛑 Stopping bot: {app_name} (Docker: {use_docker})...")
     try:
-        subprocess.run(["pm2", "stop", app_name], check=False)
-        print(f"✅ [PM2] {app_name} stopped.")
+        if use_docker:
+            subprocess.run(["docker", "stop", app_name.lower()], check=False)
+            print(f"✅ [DOCKER] {app_name} stopped.")
+        else:
+            subprocess.run(["pm2", "stop", app_name], check=False)
+            print(f"✅ [PM2] {app_name} stopped.")
     except Exception as e:
-        print(f"❌ [PM2 STOP ERROR]: {str(e)}")
+        print(f"❌ [STOP ERROR]: {str(e)}")
+
+# 🔥 NAYA: Quick Restart Engine (Bina Docker wapas build kiye)
+def quick_restart(app_name: str, use_docker: bool = False):
+    """Terminal se direct restart button dabane par turant restart karega"""
+    print(f"🔄 Quick Restarting bot: {app_name} (Docker: {use_docker})...")
+    try:
+        if use_docker:
+            subprocess.run(["docker", "restart", app_name.lower()], check=False)
+            print(f"✅ [DOCKER] {app_name} restarted.")
+        else:
+            subprocess.run(["pm2", "restart", app_name], check=False)
+            print(f"✅ [PM2] {app_name} restarted.")
+    except Exception as e:
+        print(f"❌ [RESTART ERROR]: {str(e)}")
 
 def clear_pm2_logs(app_name: str):
     """PM2 ke logs clear karne ke liye (Flush) taaki server fast rahe"""
@@ -67,7 +86,7 @@ def install_requirements(folder_path: str):
     log_file = os.path.join(folder_path, "build.log")
     req_file = os.path.join(folder_path, "requirements.txt")
     
-    # 🔥 FIX: Ensure VENV exists before installing (Sirf VIP PM2 ke liye chalega)
+    # 🔥 Ensure VENV exists before installing (Sirf VIP PM2 ke liye chalega)
     if not os.path.exists(venv_path):
         append_log(folder_path, "🏗️ [VENV] Creating isolated Virtual Environment for PM2 Engine...")
         with open(log_file, "a", encoding="utf-8") as f:
@@ -78,6 +97,7 @@ def install_requirements(folder_path: str):
             append_log(folder_path, "⬆️ [PIP] Upgrading PIP to latest version to prevent conflicts...")
             subprocess.run([pip_path, "install", "--upgrade", "pip"], cwd=folder_path, stdout=f, stderr=subprocess.STDOUT, check=False)
             
+            # 🔥 SNIPER MODE FIX
             append_log(folder_path, "🔫 [PIP] SNIPER MODE ON: Installing requirements ONE-BY-ONE to kill Dependency Hell...")
             with open(req_file, "r", encoding="utf-8") as reqs:
                 for line in reqs:
@@ -97,6 +117,7 @@ def pull_latest_code(repo_path: str, repo_url: str = None):
 
     log_file = os.path.join(repo_path, "build.log")
     
+    # 🧹 Naya deploy hai, toh purana build log clear kar do
     with open(log_file, "w", encoding="utf-8") as f:
         f.write("🚀 --- STARTING NEW BUILD ---\n")
 
@@ -124,6 +145,7 @@ def pull_latest_code(repo_path: str, repo_url: str = None):
                 
                 subprocess.run(["git", "fetch", "--all"], cwd=repo_path, stdout=f, stderr=subprocess.STDOUT, check=True)
                 
+                # 💣 FIX: Clean karte waqt venv, data, uploads, aur build.log ko ignore karo!
                 append_log(repo_path, "🧹 [GIT] Sweeping local untracked changes safely...")
                 subprocess.run(["git", "clean", "-fd", "-e", "venv", "-e", "data", "-e", "uploads", "-e", "database", "-e", "build.log"], cwd=repo_path, stdout=f, stderr=subprocess.STDOUT, check=True) 
                 
@@ -132,8 +154,7 @@ def pull_latest_code(repo_path: str, repo_url: str = None):
                 except:
                     subprocess.run(["git", "reset", "--hard", "origin/master"], cwd=repo_path, stdout=f, stderr=subprocess.STDOUT, check=True)
         
-        # 🔥 BUG FIX: Yahan se install_requirements HATA diya gaya hai! 
-        # (Sirf restart_pm2 mein VIP engine block mein chalega)
+        # 🔥 BUG FIX: Yahan se install_requirements HATA diya gaya hai taaki Double Download na ho!
         return True
     except subprocess.CalledProcessError:
         append_log(repo_path, "❌ NEX_CLOUD_BUILD_FAILED")
@@ -154,6 +175,9 @@ def restart_pm2(app_name: str, folder_path: str, use_docker: bool = False, start
             if use_docker:
                 docker_app_name = app_name.lower()
                 
+                # ==========================================
+                # 🧹 1. SMART DOCKERIGNORE (1.2GB Kachra Fix)
+                # ==========================================
                 dockerignore_path = os.path.join(folder_path, ".dockerignore")
                 if not os.path.exists(dockerignore_path):
                     dockerignore_content = ".git\nvenv\n__pycache__\n*.session\n*.session-journal\nlogs\nnode_modules\nbuild.log\n"
@@ -161,12 +185,19 @@ def restart_pm2(app_name: str, folder_path: str, use_docker: bool = False, start
                         di_file.write(dockerignore_content)
                     append_log(folder_path, "🛡️ [DOCKER] Generated .dockerignore to speed up build!")
 
+                # ==========================================
+                # 👻 2. GHOST CONTAINER KILLER (Force Remove)
+                # ==========================================
                 append_log(folder_path, f"🧹 [DOCKER] Hunting down Ghost Containers for {docker_app_name}...")
                 subprocess.run(["docker", "rm", "-f", docker_app_name], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL, check=False)
 
+                # ==========================================
+                # 🏗️ 3. DOCKERFILE GENERATION LOGIC
+                # ==========================================
                 dockerfile_path = os.path.join(folder_path, "Dockerfile")
                 runtime_path = os.path.join(folder_path, "runtime.txt")
                 
+                # 🔥 SMART RUNTIME ENGINE
                 python_base = "python:3.10-slim" 
                 
                 if os.path.exists(runtime_path):
@@ -181,6 +212,7 @@ def restart_pm2(app_name: str, folder_path: str, use_docker: bool = False, start
                     except Exception as e:
                         append_log(folder_path, f"⚠️ [RUNTIME ERROR] Failed to read runtime.txt, using default 3.10.")
 
+                # 🪄 PPAM2 AUTO-DOCKERFILE ENGINE (Added Git & SNIPER MODE Dependencies)
                 if not os.path.exists(dockerfile_path):
                     append_log(folder_path, f"🪄 [PPAM2] Dockerfile not found! Auto-generating Public PM2 container for {python_base}...")
                     auto_dockerfile = f"""FROM {python_base}
@@ -202,6 +234,9 @@ CMD ["pm2-runtime", "start", "bash", "--name", "{app_name}", "--", "-c", "{start
                 else:
                     append_log(folder_path, f"📄 [DOCKER] Existing Dockerfile detected. Using repository's Dockerfile.")
 
+                # ==========================================
+                # 🚀 4. BUILD & RUN NEW CONTAINER
+                # ==========================================
                 append_log(folder_path, f"🐳 [DOCKER] Building image for {docker_app_name}... (Takes time)")
                 subprocess.run(["docker", "build", "-t", docker_app_name, "."], cwd=folder_path, stdout=f, stderr=subprocess.STDOUT, check=True)
                 
@@ -249,6 +284,7 @@ CMD ["pm2-runtime", "start", "bash", "--name", "{app_name}", "--", "-c", "{start
                     subprocess.run(["pm2", "restart", app_name], stdout=f, stderr=subprocess.STDOUT, check=True)
                     append_log(folder_path, f"✅ [PM2] {app_name} successfully restarted!")
 
+            # 🔥 SMART STOP: Ye word aate hi frontend ka websocket disconnect ho jayega!
             append_log(folder_path, f"✅ NEX_CLOUD_BUILD_COMPLETE")
             return True
             
@@ -258,4 +294,4 @@ CMD ["pm2-runtime", "start", "bash", "--name", "{app_name}", "--", "-c", "{start
     except Exception as e:
         append_log(folder_path, f"❌ NEX_CLOUD_BUILD_FAILED")
         raise Exception(f"Deployment System Error: {str(e)}")
-        
+                                   
