@@ -3,9 +3,10 @@ import random
 import string
 from datetime import datetime
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request
 
-from CLOUDSERVER.database.database import tickets_collection
+# 🔥 FIX: users_collection ko bhi import kar liya taaki Approve button DB update kar sake
+from CLOUDSERVER.database.database import tickets_collection, users_collection
 from CLOUDSERVER.auth.verify import verify_api_key
 
 router = APIRouter()
@@ -17,7 +18,7 @@ def generate_ticket_id():
     return "TKT-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
 
 # ==========================================
-# 🔥 VIP PM2 TELEGRAM ALERT (For deploy.py)
+# 🔥 VIP PM2 TELEGRAM ALERT (With Buttons!)
 # ==========================================
 async def send_vip_access_request_tg(username: str, app_name: str):
     """Deploy.py se call hoga jab koi bina permission VIP engine use karega"""
@@ -29,19 +30,86 @@ async def send_vip_access_request_tg(username: str, app_name: str):
         f"🚨 <b>VIP PM2 Access Request</b> 🚨\n\n"
         f"👤 <b>User:</b> <code>{username}</code>\n"
         f"🤖 <b>App Name:</b> <code>{app_name}</code>\n\n"
-        f"⚠️ <i>User is trying to deploy using the VIP PM2 Engine but doesn't have access.</i>\n"
-        f"👉 <b>Action Required:</b> Go to Database and set <code>pm2_access: true</code> for this user."
+        f"⚠️ <i>User is trying to deploy using the VIP PM2 Engine but doesn't have access.</i>"
     )
     
+    # 🔥 NAYA: Approve aur Reject ke mast buttons
+    reply_markup = {
+        "inline_keyboard": [
+            [
+                {"text": "✅ Approve VIP", "callback_data": f"vip_approve_{username}"},
+                {"text": "❌ Reject", "callback_data": f"vip_reject_{username}"}
+            ]
+        ]
+    }
+    
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    json_payload = {"chat_id": TELEGRAM_ADMIN_ID, "text": msg_text, "parse_mode": "HTML"}
+    json_payload = {
+        "chat_id": TELEGRAM_ADMIN_ID, 
+        "text": msg_text, 
+        "parse_mode": "HTML",
+        "reply_markup": reply_markup # Buttons yahan attach ho gaye
+    }
     
     async with httpx.AsyncClient() as client:
         try:
             await client.post(url, json=json_payload)
-            print(f"✅ VIP Request sent to Admin on Telegram for {username}")
+            print(f"✅ VIP Request with Buttons sent to Admin for {username}")
         except Exception as e:
             print(f"🚨 Telegram Msg Failed: {e}")
+
+# ==========================================
+# 🤖 TELEGRAM WEBHOOK (For Handling Button Clicks)
+# ==========================================
+@router.post("/tg-webhook")
+async def telegram_webhook(request: Request):
+    """Jab tu Telegram pe Approve/Reject dabayega toh Telegram is endpoint pe data bhejega"""
+    try:
+        update = await request.json()
+        
+        if "callback_query" in update:
+            callback_query = update["callback_query"]
+            callback_data = callback_query.get("data", "")
+            message = callback_query.get("message", {})
+            chat_id = message.get("chat", {}).get("id")
+            message_id = message.get("message_id")
+
+            # ✅ Agar tu APPROVE dabata hai
+            if callback_data.startswith("vip_approve_"):
+                username = callback_data.replace("vip_approve_", "")
+                
+                # 1. Database mein VIP access ON kar do
+                await users_collection.update_one({"username": username}, {"$set": {"pm2_access": True}})
+                
+                # 2. Telegram message ko edit karke 'Approved' likh do
+                url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText"
+                payload = {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "text": f"✅ <b>VIP Access Approved for:</b> <code>{username}</code>\nAb wo bindass PM2 use kar sakta hai!",
+                    "parse_mode": "HTML"
+                }
+                async with httpx.AsyncClient() as client:
+                    await client.post(url, json=payload)
+
+            # ❌ Agar tu REJECT dabata hai
+            elif callback_data.startswith("vip_reject_"):
+                username = callback_data.replace("vip_reject_", "")
+                
+                url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText"
+                payload = {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "text": f"❌ <b>VIP Access Rejected for:</b> <code>{username}</code>",
+                    "parse_mode": "HTML"
+                }
+                async with httpx.AsyncClient() as client:
+                    await client.post(url, json=payload)
+                    
+        return {"status": "ok"}
+    except Exception as e:
+        print(f"🚨 Webhook Error: {e}")
+        return {"status": "error"}
 
 # ==========================================
 # 1. CREATE SUPPORT TICKET (With Screenshot)
@@ -55,7 +123,6 @@ async def create_ticket(
 ):
     ticket_id = generate_ticket_id()
     
-    # 1. Message for Admin (Telegram)
     msg_text = (
         f"🎫 <b>NEW SUPPORT TICKET</b> 🎫\n\n"
         f"👤 <b>User:</b> <code>{current_user}</code>\n"
@@ -67,17 +134,14 @@ async def create_ticket(
 
     tg_message_id = None
     
-    # 2. Telegram pe bhej (Screenshot ke sath ya bina)
     async with httpx.AsyncClient() as client:
         if screenshot and screenshot.filename:
-            # Agar image hai toh sendPhoto API
             url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
             file_bytes = await screenshot.read()
             files = {"photo": (screenshot.filename, file_bytes, screenshot.content_type)}
             data = {"chat_id": TELEGRAM_ADMIN_ID, "caption": msg_text, "parse_mode": "HTML"}
             response = await client.post(url, data=data, files=files)
         else:
-            # Agar sirf text hai toh sendMessage API
             url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
             json_payload = {"chat_id": TELEGRAM_ADMIN_ID, "text": msg_text, "parse_mode": "HTML"}
             response = await client.post(url, json=json_payload)
@@ -86,9 +150,8 @@ async def create_ticket(
             raise HTTPException(status_code=500, detail="Failed to send ticket to Admin.")
             
         resp_data = response.json()
-        tg_message_id = resp_data.get("result", {}).get("message_id") # Ye ID track karegi tera reply
+        tg_message_id = resp_data.get("result", {}).get("message_id")
 
-    # 3. Database mein save karo
     ticket_data = {
         "ticket_id": ticket_id,
         "owner": current_user,
@@ -97,7 +160,7 @@ async def create_ticket(
         "has_screenshot": bool(screenshot and screenshot.filename),
         "status": "Open",
         "admin_reply": None,
-        "tg_message_id": tg_message_id, # Is ID se pata chalega tu kis ticket pe reply kar raha hai
+        "tg_message_id": tg_message_id, 
         "created_at": datetime.utcnow()
     }
     
@@ -117,4 +180,4 @@ async def get_my_tickets(current_user: str = Depends(verify_api_key)):
         tkt["_id"] = str(tkt["_id"])
         
     return {"status": "success", "tickets": tickets}
-            
+    
