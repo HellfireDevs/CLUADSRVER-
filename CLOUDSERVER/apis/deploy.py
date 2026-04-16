@@ -8,6 +8,8 @@ import re
 import hmac       
 import hashlib    
 import time       
+import json               # 🔥 TELEGRAM KE LIYE
+import urllib.request     # 🔥 TELEGRAM KE LIYE
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
@@ -43,6 +45,35 @@ async def deploy_rate_limit(request: Request):
         raise HTTPException(status_code=429, detail="⚠️ Too Many Requests! Spamming is not allowed. Try again in a minute.")
         
     DEPLOY_LIMITS[client_ip].append(current_time)
+
+# ==========================================
+# 📱 TELEGRAM NOTIFICATION ENGINE (NEW 🔥)
+# ==========================================
+def notify_admin_on_telegram(username: str, app_name: str):
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    admin_chat_id = os.getenv("ADMIN_CHAT_ID")
+    
+    if not bot_token or not admin_chat_id:
+        print("⚠️ Telegram Token ya Admin Chat ID set nahi hai .env mein!")
+        return
+        
+    message = (
+        f"🚨 *VIP PM2 Access Request* 🚨\n\n"
+        f"👤 *User:* `{username}`\n"
+        f"🤖 *App Name:* `{app_name}`\n\n"
+        f"⚠️ User is trying to deploy using the VIP PM2 Engine but doesn't have access.\n"
+        f"👉 *Action Required:* Go to Database and set `pm2_access: true` for `{username}`."
+    )
+    
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    data = json.dumps({"chat_id": admin_chat_id, "text": message, "parse_mode": "Markdown"}).encode('utf-8')
+    
+    try:
+        req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
+        urllib.request.urlopen(req, timeout=5)
+        print(f"✅ VIP Request sent to Admin on Telegram for {username}")
+    except Exception as e:
+        print(f"🚨 Telegram Msg Failed: {e}")
 
 # ==========================================
 # 📧 EMAIL NOTIFICATION ENGINE
@@ -109,7 +140,6 @@ class DockerDeployPayload(BaseModel):
     repo_url: str       
     repo_name: str      
     app_name: str       
-    # Docker mode mein backend auto-detect karega
 
 class ActionPayload(BaseModel):
     app_name: str
@@ -200,8 +230,15 @@ async def deploy_vip_pm2(payload: VIPPM2DeployPayload, background_tasks: Backgro
 
     user_info = await get_user_by_username(current_user)
     
+    # 🔥 TELEGRAM MAGIC FIX HERE 🔥
     if not user_info.get("pm2_access", False):
-        raise HTTPException(status_code=403, detail="🔒 VIP PM2 Access Restricted! You need Admin approval.")
+        # Admin ko background mein chupke se Telegram message bhej do
+        background_tasks.add_task(notify_admin_on_telegram, current_user, payload.app_name)
+        # User ko naya warning message dikhao
+        raise HTTPException(
+            status_code=403, 
+            detail="🔒 VIP PM2 Access Restricted! An approval request has been sent to the Admin on Telegram. Please wait for approval."
+        )
 
     if check_pm2_exists(payload.app_name) or await check_pm2_name_in_db(payload.app_name):
         raise HTTPException(status_code=400, detail="❌ App Name server pe pehle se taken hai!")
@@ -309,12 +346,10 @@ async def bot_actions(payload: ActionPayload, background_tasks: BackgroundTasks,
 
     try:
         if payload.action == "stop":
-            # 🔥 FIX: Pass use_docker to stop function
             await asyncio.to_thread(stop_pm2, payload.app_name, use_docker)
             return {"status": "success", "message": "Bot Stopped!"}
             
         elif payload.action == "restart":
-            # 🔥 FIX: QUICK RESTART call kiya gaya hai taaki faltu wapas build na ho
             await asyncio.to_thread(quick_restart, payload.app_name, use_docker)
             return {"status": "success", "message": "Bot Restarted!"}
             
@@ -383,4 +418,4 @@ async def delete_bot_from_db(app_name: str):
     from CLOUDSERVER.database.database import deploys_collection
     result = await deploys_collection.delete_one({"pm2_name": app_name})
     return result.deleted_count > 0
-        
+                                    
