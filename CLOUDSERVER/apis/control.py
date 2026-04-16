@@ -170,4 +170,29 @@ async def get_system_status():
             "color": broadcast.get("color", "yellow") if broadcast else "yellow"
         }
     }
+
+# ==========================================
+# 👥 5. GET ALL USERS (ADMIN ONLY)
+# ==========================================
+@router.get("/users")
+async def get_all_users(admin: bool = Depends(verify_admin)):
+    # Password field ko chhod kar saare users fetch karo
+    users = await users_collection.find({}, {"_id": 0, "password": 0}).to_list(length=1000)
+    return {"status": "success", "data": users}
+
+# ==========================================
+# 👑 6. UPDATE PREMIUM STATUS
+# ==========================================
+class PremiumPayload(BaseModel):
+    username: str
+    is_premium: bool
+
+@router.post("/update-premium")
+async def update_premium_status(payload: PremiumPayload, admin: bool = Depends(verify_admin)):
+    await users_collection.update_one(
+        {"username": payload.username},
+        {"$set": {"is_premium": payload.is_premium}}
+    )
+    status_text = "Premium Granted 👑" if payload.is_premium else "Premium Revoked ❌"
+    return {"status": "success", "message": f"{payload.username} is now {status_text}"}
     
