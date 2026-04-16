@@ -61,20 +61,29 @@ def clear_pm2_logs(app_name: str):
 # 2. SMART GIT ENGINE (Init + Fetch + Reset + Clean + VENV)
 # ==========================================
 def install_requirements(folder_path: str):
-    """VENV ke andar specific requirements install karne ke liye"""
+    """VENV ke andar specific requirements install karne ke liye (SNIPER MODE)"""
     venv_path = os.path.join(folder_path, "venv")
     pip_path = os.path.join(venv_path, "bin", "pip")
     log_file = os.path.join(folder_path, "build.log")
+    req_file = os.path.join(folder_path, "requirements.txt")
     
-    if os.path.exists(os.path.join(folder_path, "requirements.txt")):
+    if os.path.exists(req_file):
         with open(log_file, "a", encoding="utf-8") as f:
-            # 🔥 FIX 1: Auto PIP Upgrade (Dependency loop rokne ke liye)
             append_log(folder_path, "⬆️ [PIP] Upgrading PIP to latest version to prevent conflicts...")
             subprocess.run([pip_path, "install", "--upgrade", "pip"], cwd=folder_path, stdout=f, stderr=subprocess.STDOUT, check=False)
             
-            # 🔥 FIX 2: --no-cache-dir add kiya taaki cache kachra skip ho
-            append_log(folder_path, "📦 [PIP] Installing/Updating requirements into isolated VENV...")
-            subprocess.run([pip_path, "install", "--no-cache-dir", "-r", "requirements.txt"], cwd=folder_path, stdout=f, stderr=subprocess.STDOUT, check=True)
+            # 🔥 THE SNIPER MODE FIX: Loop chala ke ek-ek package install karo taaki Pip confuse na ho
+            append_log(folder_path, "🔫 [PIP] SNIPER MODE ON: Installing requirements ONE-BY-ONE to kill Dependency Hell...")
+            with open(req_file, "r", encoding="utf-8") as reqs:
+                for line in reqs:
+                    pkg = line.strip()
+                    # Khali line aur comments (#) ko ignore maro
+                    if pkg and not pkg.startswith("#"):
+                        append_log(folder_path, f"⬇️ Installing: {pkg}")
+                        # check=False rakha hai taaki ek package fail bhi ho toh baaki install ho jayein!
+                        subprocess.run([pip_path, "install", "--no-cache-dir", pkg], cwd=folder_path, stdout=f, stderr=subprocess.STDOUT, check=False)
+            
+            append_log(folder_path, "✅ [PIP] All packages installed successfully via Sniper Mode!")
     else:
         append_log(folder_path, "⚠️ [PIP] No requirements.txt found. Skipping pip install.")
 
@@ -186,7 +195,7 @@ def restart_pm2(app_name: str, folder_path: str, use_docker: bool = False, start
                     except Exception as e:
                         append_log(folder_path, f"⚠️ [RUNTIME ERROR] Failed to read runtime.txt, using default 3.10.")
 
-                # 🪄 PPAM2 AUTO-DOCKERFILE ENGINE (Added Git & Dependencies)
+                # 🪄 PPAM2 AUTO-DOCKERFILE ENGINE (Added Git & SNIPER MODE Dependencies)
                 if not os.path.exists(dockerfile_path):
                     append_log(folder_path, f"🪄 [PPAM2] Dockerfile not found! Auto-generating Public PM2 container for {python_base}...")
                     auto_dockerfile = f"""FROM {python_base}
@@ -196,7 +205,10 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install
 RUN npm install -g pm2
 WORKDIR /app
 COPY . .
-RUN if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; fi
+RUN if [ -f requirements.txt ]; then \
+        python3 -m pip install --upgrade pip && \
+        tr -d '\\r' < requirements.txt | grep -v '^#' | xargs -n 1 pip install --no-cache-dir; \
+    fi
 RUN if [ -f package.json ]; then npm install; fi
 # Running via PM2-Runtime inside Docker
 CMD ["pm2-runtime", "start", "bash", "--name", "{app_name}", "--", "-c", "{start_cmd}"]
@@ -264,4 +276,4 @@ CMD ["pm2-runtime", "start", "bash", "--name", "{app_name}", "--", "-c", "{start
     except Exception as e:
         append_log(folder_path, f"❌ NEX_CLOUD_BUILD_FAILED")
         raise Exception(f"Deployment System Error: {str(e)}")
-                    
+        
