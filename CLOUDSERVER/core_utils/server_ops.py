@@ -37,7 +37,6 @@ def check_pm2_exists(app_name: str) -> bool:
         print(f"❌ [PM2 CHECK ERROR]: {str(e)}")
         return False
 
-# 🔥 FIX: Ab ye Docker aur PM2 dono ko stop kar sakta hai
 def stop_pm2(app_name: str, use_docker: bool = False):
     """Dashboard se bot ko stop karne ke liye (Docker & PM2 dono ke liye)"""
     print(f"🛑 Stopping bot: {app_name} (Docker: {use_docker})...")
@@ -51,7 +50,6 @@ def stop_pm2(app_name: str, use_docker: bool = False):
     except Exception as e:
         print(f"❌ [STOP ERROR]: {str(e)}")
 
-# 🔥 NAYA: Quick Restart Engine (Bina Docker wapas build kiye)
 def quick_restart(app_name: str, use_docker: bool = False):
     """Terminal se direct restart button dabane par turant restart karega"""
     print(f"🔄 Quick Restarting bot: {app_name} (Docker: {use_docker})...")
@@ -86,7 +84,6 @@ def install_requirements(folder_path: str):
     log_file = os.path.join(folder_path, "build.log")
     req_file = os.path.join(folder_path, "requirements.txt")
     
-    # 🔥 Ensure VENV exists before installing (Sirf VIP PM2 ke liye chalega)
     if not os.path.exists(venv_path):
         append_log(folder_path, "🏗️ [VENV] Creating isolated Virtual Environment for PM2 Engine...")
         with open(log_file, "a", encoding="utf-8") as f:
@@ -97,7 +94,6 @@ def install_requirements(folder_path: str):
             append_log(folder_path, "⬆️ [PIP] Upgrading PIP to latest version to prevent conflicts...")
             subprocess.run([pip_path, "install", "--upgrade", "pip"], cwd=folder_path, stdout=f, stderr=subprocess.STDOUT, check=False)
             
-            # 🔥 SNIPER MODE FIX
             append_log(folder_path, "🔫 [PIP] SNIPER MODE ON: Installing requirements ONE-BY-ONE to kill Dependency Hell...")
             with open(req_file, "r", encoding="utf-8") as reqs:
                 for line in reqs:
@@ -117,7 +113,6 @@ def pull_latest_code(repo_path: str, repo_url: str = None):
 
     log_file = os.path.join(repo_path, "build.log")
     
-    # 🧹 Naya deploy hai, toh purana build log clear kar do
     with open(log_file, "w", encoding="utf-8") as f:
         f.write("🚀 --- STARTING NEW BUILD ---\n")
 
@@ -145,7 +140,6 @@ def pull_latest_code(repo_path: str, repo_url: str = None):
                 
                 subprocess.run(["git", "fetch", "--all"], cwd=repo_path, stdout=f, stderr=subprocess.STDOUT, check=True)
                 
-                # 💣 FIX: Clean karte waqt venv, data, uploads, aur build.log ko ignore karo!
                 append_log(repo_path, "🧹 [GIT] Sweeping local untracked changes safely...")
                 subprocess.run(["git", "clean", "-fd", "-e", "venv", "-e", "data", "-e", "uploads", "-e", "database", "-e", "build.log"], cwd=repo_path, stdout=f, stderr=subprocess.STDOUT, check=True) 
                 
@@ -154,7 +148,6 @@ def pull_latest_code(repo_path: str, repo_url: str = None):
                 except:
                     subprocess.run(["git", "reset", "--hard", "origin/master"], cwd=repo_path, stdout=f, stderr=subprocess.STDOUT, check=True)
         
-        # 🔥 BUG FIX: Yahan se install_requirements HATA diya gaya hai taaki Double Download na ho!
         return True
     except subprocess.CalledProcessError:
         append_log(repo_path, "❌ NEX_CLOUD_BUILD_FAILED")
@@ -197,7 +190,6 @@ def restart_pm2(app_name: str, folder_path: str, use_docker: bool = False, start
                 dockerfile_path = os.path.join(folder_path, "Dockerfile")
                 runtime_path = os.path.join(folder_path, "runtime.txt")
                 
-                # 🔥 SMART RUNTIME ENGINE
                 python_base = "python:3.10-slim" 
                 
                 if os.path.exists(runtime_path):
@@ -212,7 +204,6 @@ def restart_pm2(app_name: str, folder_path: str, use_docker: bool = False, start
                     except Exception as e:
                         append_log(folder_path, f"⚠️ [RUNTIME ERROR] Failed to read runtime.txt, using default 3.10.")
 
-                # 🪄 PPAM2 AUTO-DOCKERFILE ENGINE (Added Git & SNIPER MODE Dependencies)
                 if not os.path.exists(dockerfile_path):
                     append_log(folder_path, f"🪄 [PPAM2] Dockerfile not found! Auto-generating Public PM2 container for {python_base}...")
                     auto_dockerfile = f"""FROM {python_base}
@@ -240,20 +231,31 @@ CMD ["pm2-runtime", "start", "bash", "--name", "{app_name}", "--", "-c", "{start
                 append_log(folder_path, f"🐳 [DOCKER] Building image for {docker_app_name}... (Takes time)")
                 subprocess.run(["docker", "build", "-t", docker_app_name, "."], cwd=folder_path, stdout=f, stderr=subprocess.STDOUT, check=True)
                 
-                append_log(folder_path, f"🚀 [DOCKER] Running PPAM2 container for {docker_app_name} with Limits...")
-                subprocess.run([
+                append_log(folder_path, f"🚀 [DOCKER] Running PPAM2 container for {docker_app_name} with Limits & Env Mount...")
+                
+                # 🔥 THE VIP DOCKER RUN COMMAND (WITH ENV VOLUME MOUNT)
+                docker_run_cmd = [
                     "docker", "run", "-d", 
                     "--name", docker_app_name, 
                     "--memory=1g",       
                     "--cpus=1.0",        
-                    "--restart=unless-stopped",
-                    docker_app_name
-                ], stdout=f, stderr=subprocess.STDOUT, check=True)
+                    "--restart=unless-stopped"
+                ]
+                
+                # Check agar VPS host pe .env file hai, toh container se link kar do
+                env_path = os.path.join(folder_path, ".env")
+                if os.path.exists(env_path):
+                    append_log(folder_path, "🔗 [DOCKER] Linking .env file for Live Updates...")
+                    docker_run_cmd.extend(["-v", f"{env_path}:/app/.env"])
+                
+                # Akhir mein image ka naam
+                docker_run_cmd.append(docker_app_name)
+                
+                subprocess.run(docker_run_cmd, stdout=f, stderr=subprocess.STDOUT, check=True)
                 append_log(folder_path, f"✅ [DOCKER] {docker_app_name} successfully deployed using PPAM2 Engine!")
                 
             else:
                 # 👑 THE "VIP PM2" ENGINE 👑
-                # 🔥 FIX: Sirf jab VIP PM2 engine chuna jayega, tabhi requirements install hongi (host server pe)
                 append_log(folder_path, "⚙️ [PM2] Preparing VIP PM2 Environment...")
                 install_requirements(folder_path)
                 
@@ -284,7 +286,6 @@ CMD ["pm2-runtime", "start", "bash", "--name", "{app_name}", "--", "-c", "{start
                     subprocess.run(["pm2", "restart", app_name], stdout=f, stderr=subprocess.STDOUT, check=True)
                     append_log(folder_path, f"✅ [PM2] {app_name} successfully restarted!")
 
-            # 🔥 SMART STOP: Ye word aate hi frontend ka websocket disconnect ho jayega!
             append_log(folder_path, f"✅ NEX_CLOUD_BUILD_COMPLETE")
             return True
             
@@ -294,4 +295,4 @@ CMD ["pm2-runtime", "start", "bash", "--name", "{app_name}", "--", "-c", "{start
     except Exception as e:
         append_log(folder_path, f"❌ NEX_CLOUD_BUILD_FAILED")
         raise Exception(f"Deployment System Error: {str(e)}")
-                                   
+                
