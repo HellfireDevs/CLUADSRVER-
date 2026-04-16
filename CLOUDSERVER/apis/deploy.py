@@ -130,17 +130,35 @@ async def run_background_update(repo_path: str, pm2_name: str, repo_url: str, us
     user_email = user_info.get("email") if user_info else None
     github_token = user_info.get("github_token") if user_info else None
 
+    # 🔥 FIX 1: Fetch bot info from Database to retrieve saved env variables
+    bot_info = await get_bot_by_name(pm2_name)
+
     secure_repo_url = repo_url
     if github_token and repo_url and "github.com" in repo_url and "@github.com" not in repo_url:
         print("🔐 [GITHUB] Secure Access Token Injected")
         secure_repo_url = repo_url.replace("https://github.com/", f"https://{github_token}@github.com/")
 
     try:
+        # 1. Pull the fresh code (which might delete existing files like .env)
         await asyncio.to_thread(pull_latest_code, repo_path, secure_repo_url)
+        
+        # 🔥 THE MAGIC FIX: Restore .env from Database right before starting the bot
+        if bot_info and bot_info.get("env_vars"):
+            print(f"💉 [ENV INJECTOR] Restoring .env variables for {pm2_name} before starting...")
+            env_file_path = os.path.join(repo_path, ".env")
+            
+            def restore_env():
+                with open(env_file_path, "w", encoding="utf-8") as f:
+                    for key, value in bot_info["env_vars"].items():
+                        safe_value = str(value).replace('"', '\\"') 
+                        f.write(f'{key}="{safe_value}"\n')
+            
+            await asyncio.to_thread(restore_env)
         
         if not use_docker and is_reset:
             await asyncio.to_thread(install_requirements, repo_path) 
 
+        # Now start PM2 or Docker. The .env file is guaranteed to be there.
         await asyncio.to_thread(restart_pm2, pm2_name, repo_path, use_docker, start_cmd)
         
         print(f"🔥 [DEPLOY ENGINE] 100% DONE! {pm2_name} is LIVE.")
@@ -201,16 +219,13 @@ async def deploy_vip_pm2(payload: VIPPM2DeployPayload, background_tasks: Backgro
 
     user_info = await get_user_by_username(current_user)
     
-    # 🔥 ULTIMATE AWAIT FIX HERE 🔥
     if not user_info.get("pm2_access", False):
         print(f"🔔 [VIP ALERT] Sending Telegram notification for {current_user}...")
         
-        # 'await' laga diya hai! Ab jab tak msg deliver nahi hoga, code yahin ruka rahega.
         await send_vip_access_request_tg(current_user, payload.app_name)
         
         print("✅ Telegram notification sent successfully! Raising 403 Error now...")
         
-        # Telegram delivery confirm hone ke baad ab tu makhhan ki tarah error fek sakta hai
         raise HTTPException(
             status_code=403, 
             detail="🔒 VIP PM2 Access Restricted! An approval request has been sent to the Admin on Telegram. Please wait for approval."
@@ -393,4 +408,4 @@ async def delete_bot_from_db(app_name: str):
     from CLOUDSERVER.database.database import deploys_collection
     result = await deploys_collection.delete_one({"pm2_name": app_name})
     return result.deleted_count > 0
-                                    
+                                
