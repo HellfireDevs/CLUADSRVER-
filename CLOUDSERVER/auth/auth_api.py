@@ -234,7 +234,7 @@ async def register_user(payload: RegisterPayload, background_tasks: BackgroundTa
     # 🛡️ Email Sanitize aur Strict @gmail.com check
     clean_email_address = sanitize_email(payload.email)
 
-    if await get_user_by_username(payload.username):
+    if await get_user_by_username(payload.username.lower().strip()):
         raise HTTPException(status_code=400, detail="Username already taken!")
         
     if await get_user_by_email(clean_email_address):
@@ -243,7 +243,7 @@ async def register_user(payload: RegisterPayload, background_tasks: BackgroundTa
     otp = random.randint(100000, 999999)
     
     TEMP_OTP_STORE[clean_email_address] = {
-        "username": payload.username,
+        "username": payload.username.lower().strip(),
         "password_hash": hash_password(payload.password),
         "otp": otp,
         "original_email": payload.email 
@@ -258,11 +258,8 @@ async def register_user(payload: RegisterPayload, background_tasks: BackgroundTa
 # ==========================================
 @router.post("/verify-otp")
 async def verify_otp(payload: VerifyOTPPayload, background_tasks: BackgroundTasks):
-    # sanitize_email fail bhi ho sakta hai format galat hone pe
-    try:
-        clean_email_address = sanitize_email(payload.email)
-    except:
-        clean_email_address = payload.email.lower().strip()
+    # 🔥 FIX: Try-Except hata diya! Agar email invalid hai, toh yahi 400 error de dega. Bypass impossible!
+    clean_email_address = sanitize_email(payload.email)
 
     if clean_email_address not in TEMP_OTP_STORE:
         raise HTTPException(status_code=404, detail="No pending registration found for this email.")
@@ -301,7 +298,7 @@ async def login_user(payload: LoginPayload, request: Request, background_tasks: 
     if not is_human:
         raise HTTPException(status_code=400, detail="Robot detection failed! Tu bot hai kya? 🤖")
 
-    user = await get_user_by_username(payload.username)
+    user = await get_user_by_username(payload.username.lower().strip())
     
     if not user:
         raise HTTPException(status_code=404, detail="Username not found!")
@@ -328,17 +325,12 @@ async def login_user(payload: LoginPayload, request: Request, background_tasks: 
 # ==========================================
 @router.post("/forgot-password")
 async def forgot_password(payload: ForgotPasswordPayload, background_tasks: BackgroundTasks):
-    # Pehle username se dhoondo
-    user = await get_user_by_username(payload.username)
-    
-    if not user:
-        # Agar username nahi mila, toh check karo shayad usne email dali ho
-        try:
-            clean_email = sanitize_email(payload.username)
-        except:
-            clean_email = payload.username.lower().strip()
-            
+    # 🔥 FIX: Smart Logic! Agar '@' hai toh Email mano, varna Username mano.
+    if "@" in payload.username:
+        clean_email = sanitize_email(payload.username)
         user = await get_user_by_email(clean_email)
+    else:
+        user = await get_user_by_username(payload.username.lower().strip())
         
     if not user:
         raise HTTPException(status_code=404, detail="User or Email not found in our database!")
@@ -358,15 +350,12 @@ async def forgot_password(payload: ForgotPasswordPayload, background_tasks: Back
 # ==========================================
 @router.post("/reset-password")
 async def reset_password(payload: ResetPasswordPayload):
-    # Yahan bhi dono check karte hain taaki frontend se email/username kuch bhi aaye pass ho jaye
-    user = await get_user_by_username(payload.username)
-    
-    if not user:
-        try:
-            clean_email = sanitize_email(payload.username)
-        except:
-            clean_email = payload.username.lower().strip()
+    # 🔥 FIX: Yahan bhi same Smart Logic taaki bypass na ho
+    if "@" in payload.username:
+        clean_email = sanitize_email(payload.username)
         user = await get_user_by_email(clean_email)
+    else:
+        user = await get_user_by_username(payload.username.lower().strip())
         
     if not user:
         raise HTTPException(status_code=404, detail="User or Email not found!")
