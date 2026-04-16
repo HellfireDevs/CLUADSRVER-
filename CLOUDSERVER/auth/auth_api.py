@@ -199,7 +199,7 @@ class VerifyOTPPayload(BaseModel):
     otp: int
 
 class LoginPayload(BaseModel):
-    username: str
+    username: str # 🔥 Payload property is called username, but user can enter email too
     password: str
     captcha_token: str 
 
@@ -299,7 +299,7 @@ async def verify_otp(payload: VerifyOTPPayload, background_tasks: BackgroundTask
     return {"status": "success", "message": f"Account created successfully! Welcome {stored_data['username']} 🚀"}
 
 # ==========================================
-# 3. LOGIN ENDPOINT
+# 3. LOGIN ENDPOINT (🔥 Smart Logic for Username or Email)
 # ==========================================
 @router.post("/login")
 async def login_user(payload: LoginPayload, request: Request, background_tasks: BackgroundTasks):
@@ -308,10 +308,22 @@ async def login_user(payload: LoginPayload, request: Request, background_tasks: 
     if not is_human:
         raise HTTPException(status_code=400, detail="Robot detection failed! Tu bot hai kya? 🤖")
 
-    user = await get_user_by_username(payload.username.lower().strip())
+    # The payload.username could contain an email OR a username
+    login_identifier = payload.username.lower().strip()
+
+    if "@" in login_identifier:
+        try:
+            # Re-use our strict email sanitization (blocks dot tricks, ensures gmail etc.)
+            clean_email = sanitize_email(login_identifier)
+            user = await get_user_by_email(clean_email)
+        except Exception:
+             # If sanitize_email throws an error (e.g. not gmail), it's definitely not a valid user
+             raise HTTPException(status_code=404, detail="Account not found! Please check your credentials.")
+    else:
+        user = await get_user_by_username(login_identifier)
     
     if not user:
-        raise HTTPException(status_code=404, detail="Username not found!")
+        raise HTTPException(status_code=404, detail="Account not found! Please check your credentials.")
 
     provided_hash = hash_password(payload.password)
 
@@ -319,7 +331,7 @@ async def login_user(payload: LoginPayload, request: Request, background_tasks: 
         raise HTTPException(status_code=401, detail="Incorrect Password!")
 
     client_ip = request.client.host if request.client else "Unknown IP"
-    background_tasks.add_task(send_login_alert, user["email"], payload.username, client_ip)
+    background_tasks.add_task(send_login_alert, user["email"], user["username"], client_ip)
 
     return {
         "status": "success", 
@@ -337,8 +349,11 @@ async def login_user(payload: LoginPayload, request: Request, background_tasks: 
 async def forgot_password(payload: ForgotPasswordPayload, background_tasks: BackgroundTasks):
     # 🔥 FIX: Smart Logic! Agar '@' hai toh Email mano, varna Username mano.
     if "@" in payload.username:
-        clean_email = sanitize_email(payload.username)
-        user = await get_user_by_email(clean_email)
+        try:
+            clean_email = sanitize_email(payload.username)
+            user = await get_user_by_email(clean_email)
+        except Exception:
+            raise HTTPException(status_code=404, detail="User or Email not found in our database!")
     else:
         user = await get_user_by_username(payload.username.lower().strip())
         
@@ -362,8 +377,11 @@ async def forgot_password(payload: ForgotPasswordPayload, background_tasks: Back
 async def reset_password(payload: ResetPasswordPayload):
     # 🔥 FIX: Yahan bhi same Smart Logic taaki bypass na ho
     if "@" in payload.username:
-        clean_email = sanitize_email(payload.username)
-        user = await get_user_by_email(clean_email)
+        try:
+            clean_email = sanitize_email(payload.username)
+            user = await get_user_by_email(clean_email)
+        except Exception:
+             raise HTTPException(status_code=404, detail="User or Email not found!")
     else:
         user = await get_user_by_username(payload.username.lower().strip())
         
@@ -385,3 +403,4 @@ async def reset_password(payload: ResetPasswordPayload):
     del TEMP_OTP_STORE[store_key]
 
     return {"status": "success", "message": "✅ Password has been reset successfully! You can now login with your new password."}
+                            
