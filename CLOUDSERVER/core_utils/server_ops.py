@@ -67,9 +67,14 @@ def install_requirements(folder_path: str):
     log_file = os.path.join(folder_path, "build.log")
     
     if os.path.exists(os.path.join(folder_path, "requirements.txt")):
-        append_log(folder_path, "📦 [PIP] Installing/Updating requirements into isolated VENV...")
         with open(log_file, "a", encoding="utf-8") as f:
-            subprocess.run([pip_path, "install", "-r", "requirements.txt"], cwd=folder_path, stdout=f, stderr=subprocess.STDOUT, check=True)
+            # 🔥 FIX 1: Auto PIP Upgrade (Dependency loop rokne ke liye)
+            append_log(folder_path, "⬆️ [PIP] Upgrading PIP to latest version to prevent conflicts...")
+            subprocess.run([pip_path, "install", "--upgrade", "pip"], cwd=folder_path, stdout=f, stderr=subprocess.STDOUT, check=False)
+            
+            # 🔥 FIX 2: --no-cache-dir add kiya taaki cache kachra skip ho
+            append_log(folder_path, "📦 [PIP] Installing/Updating requirements into isolated VENV...")
+            subprocess.run([pip_path, "install", "--no-cache-dir", "-r", "requirements.txt"], cwd=folder_path, stdout=f, stderr=subprocess.STDOUT, check=True)
     else:
         append_log(folder_path, "⚠️ [PIP] No requirements.txt found. Skipping pip install.")
 
@@ -259,4 +264,4 @@ CMD ["pm2-runtime", "start", "bash", "--name", "{app_name}", "--", "-c", "{start
     except Exception as e:
         append_log(folder_path, f"❌ NEX_CLOUD_BUILD_FAILED")
         raise Exception(f"Deployment System Error: {str(e)}")
-        
+                    
