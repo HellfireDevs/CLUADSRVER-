@@ -8,18 +8,18 @@ import re
 import hmac       
 import hashlib    
 import time       
-import json               # 🔥 TELEGRAM KE LIYE
-import urllib.request     # 🔥 TELEGRAM KE LIYE
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
 # Server Level Tools
-# 🔥 FIX: 'quick_restart' import kiya gaya hai aur 'stop_pm2' ab docker argument lega
 from CLOUDSERVER.core_utils.server_ops import pull_latest_code, restart_pm2, check_pm2_exists, stop_pm2, install_requirements, clear_pm2_logs, quick_restart
 
 # 🚀 MongoDB Database Imports
 from CLOUDSERVER.database.deploys import register_new_bot, get_bot_by_repo, check_pm2_name_in_db, get_bot_by_name, toggle_auto_deploy, set_update_pending
 from CLOUDSERVER.database.user import get_user_by_username 
+
+# 🔥 TELEGRAM FUNCTION IMPORT FROM SUPPORT
+from CLOUDSERVER.apis.support import send_vip_access_request_tg
 
 # 🛡️ Security Import
 from CLOUDSERVER.auth.verify import verify_api_key
@@ -45,35 +45,6 @@ async def deploy_rate_limit(request: Request):
         raise HTTPException(status_code=429, detail="⚠️ Too Many Requests! Spamming is not allowed. Try again in a minute.")
         
     DEPLOY_LIMITS[client_ip].append(current_time)
-
-# ==========================================
-# 📱 TELEGRAM NOTIFICATION ENGINE (NEW 🔥)
-# ==========================================
-def notify_admin_on_telegram(username: str, app_name: str):
-    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
-    admin_chat_id = os.getenv("ADMIN_CHAT_ID")
-    
-    if not bot_token or not admin_chat_id:
-        print("⚠️ Telegram Token ya Admin Chat ID set nahi hai .env mein!")
-        return
-        
-    message = (
-        f"🚨 *VIP PM2 Access Request* 🚨\n\n"
-        f"👤 *User:* `{username}`\n"
-        f"🤖 *App Name:* `{app_name}`\n\n"
-        f"⚠️ User is trying to deploy using the VIP PM2 Engine but doesn't have access.\n"
-        f"👉 *Action Required:* Go to Database and set `pm2_access: true` for `{username}`."
-    )
-    
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    data = json.dumps({"chat_id": admin_chat_id, "text": message, "parse_mode": "Markdown"}).encode('utf-8')
-    
-    try:
-        req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
-        urllib.request.urlopen(req, timeout=5)
-        print(f"✅ VIP Request sent to Admin on Telegram for {username}")
-    except Exception as e:
-        print(f"🚨 Telegram Msg Failed: {e}")
 
 # ==========================================
 # 📧 EMAIL NOTIFICATION ENGINE
@@ -230,10 +201,16 @@ async def deploy_vip_pm2(payload: VIPPM2DeployPayload, background_tasks: Backgro
 
     user_info = await get_user_by_username(current_user)
     
-    # 🔥 TELEGRAM MAGIC FIX HERE 🔥
+    # 🔥 ULTIMATE AWAIT FIX HERE 🔥
     if not user_info.get("pm2_access", False):
-        # 🔥 FIX: Exception raise hone se pehle thread banaya
-        asyncio.create_task(asyncio.to_thread(notify_admin_on_telegram, current_user, payload.app_name))
+        print(f"🔔 [VIP ALERT] Sending Telegram notification for {current_user}...")
+        
+        # 'await' laga diya hai! Ab jab tak msg deliver nahi hoga, code yahin ruka rahega.
+        await send_vip_access_request_tg(current_user, payload.app_name)
+        
+        print("✅ Telegram notification sent successfully! Raising 403 Error now...")
+        
+        # Telegram delivery confirm hone ke baad ab tu makhhan ki tarah error fek sakta hai
         raise HTTPException(
             status_code=403, 
             detail="🔒 VIP PM2 Access Restricted! An approval request has been sent to the Admin on Telegram. Please wait for approval."
@@ -340,7 +317,6 @@ async def bot_actions(payload: ActionPayload, background_tasks: BackgroundTasks,
     if not bot_info or bot_info["owner"] != current_user:
         raise HTTPException(status_code=403, detail="Unauthorized or Bot not found!")
 
-    # 🔥 FIX: Pata karo ki bot Docker wala hai ya normal
     use_docker = bot_info.get("use_docker", False)
 
     try:
@@ -417,4 +393,4 @@ async def delete_bot_from_db(app_name: str):
     from CLOUDSERVER.database.database import deploys_collection
     result = await deploys_collection.delete_one({"pm2_name": app_name})
     return result.deleted_count > 0
-                            
+                                    
