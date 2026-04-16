@@ -278,7 +278,9 @@ async def verify_otp(payload: VerifyOTPPayload, background_tasks: BackgroundTask
         "username": stored_data["username"],
         "email": clean_email_address, # DB mein saaf wali email jayegi
         "password": stored_data["password_hash"],
-        "api_key": api_key
+        "api_key": api_key,
+        "is_suspended": False, # Naya account active hoga
+        "is_premium": False
     }
     
     await create_user(new_user)
@@ -315,7 +317,15 @@ async def login_user(payload: LoginPayload, request: Request, background_tasks: 
     client_ip = request.client.host if request.client else "Unknown IP"
     background_tasks.add_task(send_login_alert, user["email"], payload.username, client_ip)
 
-    return {"status": "success", "message": "Login successful! Welcome back.", "api_key": user["api_key"]}
+    # 🔥 FIX: is_suspended aur is_premium frontend ko bhejo
+    return {
+        "status": "success", 
+        "message": "Login successful! Welcome back.", 
+        "api_key": user["api_key"],
+        "username": user["username"],
+        "is_premium": user.get("is_premium", False),
+        "is_suspended": user.get("is_suspended", False)
+    }
 
 # ==========================================
 # 4. FORGOT PASSWORD
