@@ -142,6 +142,27 @@ def restart_pm2(app_name: str, folder_path: str, use_docker: bool = False, start
     try:
         with open(log_file, "a", encoding="utf-8") as f:
             if use_docker:
+                docker_app_name = app_name.lower()
+                
+                # ==========================================
+                # 🧹 1. SMART DOCKERIGNORE (1.2GB Kachra Fix)
+                # ==========================================
+                dockerignore_path = os.path.join(folder_path, ".dockerignore")
+                if not os.path.exists(dockerignore_path):
+                    dockerignore_content = ".git\nvenv\n__pycache__\n*.session\n*.session-journal\nlogs\nnode_modules\nbuild.log\n"
+                    with open(dockerignore_path, "w") as di_file:
+                        di_file.write(dockerignore_content)
+                    append_log(folder_path, "🛡️ [DOCKER] Generated .dockerignore to speed up build!")
+
+                # ==========================================
+                # 👻 2. GHOST CONTAINER KILLER (Force Remove)
+                # ==========================================
+                append_log(folder_path, f"🧹 [DOCKER] Hunting down Ghost Containers for {docker_app_name}...")
+                subprocess.run(["docker", "rm", "-f", docker_app_name], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL, check=False)
+
+                # ==========================================
+                # 🏗️ 3. DOCKERFILE GENERATION LOGIC
+                # ==========================================
                 dockerfile_path = os.path.join(folder_path, "Dockerfile")
                 runtime_path = os.path.join(folder_path, "runtime.txt")
                 
@@ -160,12 +181,12 @@ def restart_pm2(app_name: str, folder_path: str, use_docker: bool = False, start
                     except Exception as e:
                         append_log(folder_path, f"⚠️ [RUNTIME ERROR] Failed to read runtime.txt, using default 3.10.")
 
-                # 🪄 PPAM2 AUTO-DOCKERFILE ENGINE
+                # 🪄 PPAM2 AUTO-DOCKERFILE ENGINE (Added Git & Dependencies)
                 if not os.path.exists(dockerfile_path):
                     append_log(folder_path, f"🪄 [PPAM2] Dockerfile not found! Auto-generating Public PM2 container for {python_base}...")
                     auto_dockerfile = f"""FROM {python_base}
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y curl build-essential
+RUN apt-get update && apt-get install -y git curl build-essential ffmpeg aria2
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs
 RUN npm install -g pm2
 WORKDIR /app
@@ -177,14 +198,14 @@ CMD ["pm2-runtime", "start", "bash", "--name", "{app_name}", "--", "-c", "{start
 """
                     with open(dockerfile_path, "w") as df:
                         df.write(auto_dockerfile)
+                else:
+                    append_log(folder_path, f"📄 [DOCKER] Existing Dockerfile detected. Using repository's Dockerfile.")
 
-                docker_app_name = app_name.lower()
+                # ==========================================
+                # 🚀 4. BUILD & RUN NEW CONTAINER
+                # ==========================================
                 append_log(folder_path, f"🐳 [DOCKER] Building image for {docker_app_name}... (Takes time)")
                 subprocess.run(["docker", "build", "-t", docker_app_name, "."], cwd=folder_path, stdout=f, stderr=subprocess.STDOUT, check=True)
-                
-                append_log(folder_path, f"🧹 [DOCKER] Cleaning up old container (if exists)...")
-                subprocess.run(["docker", "stop", docker_app_name], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL, check=False)
-                subprocess.run(["docker", "rm", docker_app_name], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL, check=False)
                 
                 append_log(folder_path, f"🚀 [DOCKER] Running PPAM2 container for {docker_app_name} with Limits...")
                 subprocess.run([
