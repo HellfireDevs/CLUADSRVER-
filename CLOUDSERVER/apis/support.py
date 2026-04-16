@@ -17,6 +17,33 @@ def generate_ticket_id():
     return "TKT-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
 
 # ==========================================
+# 🔥 VIP PM2 TELEGRAM ALERT (For deploy.py)
+# ==========================================
+async def send_vip_access_request_tg(username: str, app_name: str):
+    """Deploy.py se call hoga jab koi bina permission VIP engine use karega"""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_ADMIN_ID:
+        print("⚠️ Telegram Token ya TELEGRAM_ADMIN_ID set nahi hai .env mein!")
+        return
+    
+    msg_text = (
+        f"🚨 <b>VIP PM2 Access Request</b> 🚨\n\n"
+        f"👤 <b>User:</b> <code>{username}</code>\n"
+        f"🤖 <b>App Name:</b> <code>{app_name}</code>\n\n"
+        f"⚠️ <i>User is trying to deploy using the VIP PM2 Engine but doesn't have access.</i>\n"
+        f"👉 <b>Action Required:</b> Go to Database and set <code>pm2_access: true</code> for this user."
+    )
+    
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    json_payload = {"chat_id": TELEGRAM_ADMIN_ID, "text": msg_text, "parse_mode": "HTML"}
+    
+    async with httpx.AsyncClient() as client:
+        try:
+            await client.post(url, json=json_payload)
+            print(f"✅ VIP Request sent to Admin on Telegram for {username}")
+        except Exception as e:
+            print(f"🚨 Telegram Msg Failed: {e}")
+
+# ==========================================
 # 1. CREATE SUPPORT TICKET (With Screenshot)
 # ==========================================
 @router.post("/create")
@@ -90,4 +117,4 @@ async def get_my_tickets(current_user: str = Depends(verify_api_key)):
         tkt["_id"] = str(tkt["_id"])
         
     return {"status": "success", "tickets": tickets}
-    
+            
