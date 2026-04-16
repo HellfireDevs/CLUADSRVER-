@@ -9,13 +9,14 @@ from CLOUDSERVER.apis import (
     deploy, restart, status, ping, 
     envmanager, services, logs,  
     payment, github, account, support,
-    google_auth  # 🔥 NAYA: Google Auth Import
+    google_auth, # 🔥 Google Auth Import
+    control      # 👑 NAYA: Admin Control Import (Broadcast, Suspend, Maintenance)
 )
 
 app = FastAPI(
     title="NEX CLOUD Engine ☁️",
-    description="Custom deployment API with MongoDB, GitHub OAuth, Google Login, and Support System! 🔥",
-    version="2.6.0",     # Version upgraded for Google OAuth 😎
+    description="Custom deployment API with MongoDB, GitHub OAuth, Google Login, and Admin Controls! 🔥",
+    version="2.7.0",     # Version upgraded for Google & Admin Controls 😎
     docs_url="/docs",    
     redoc_url="/redoc"
 )
@@ -66,6 +67,9 @@ app.include_router(account.router, prefix="/api/account", tags=["Account Managem
 # 9. Support Desk (Ticket System) 🎫
 app.include_router(support.router, prefix="/api/support", tags=["Support Desk"])
 
+# 10. Admin Control Panel (Broadcast, Maintenance, Suspend) 👑
+app.include_router(control.router, prefix="/api/admin", tags=["Admin Control Panel"])
+
 
 # ==========================================
 # 🚀 ROOT ENDPOINT (Health Check)
@@ -77,7 +81,7 @@ async def root_check():
         "message": "🚀 Welcome to NEX CLOUD Engine!",
         "engine_state": "Online & Running",
         "database": "MongoDB Connected",
-        "version": "2.6.0",
+        "version": "2.7.0",
         "tip": "Visit /docs to test the APIs."
     }
     
