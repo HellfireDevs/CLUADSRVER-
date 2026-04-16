@@ -7,7 +7,7 @@ import asyncio
 import re 
 import hmac       
 import hashlib    
-import time       # 🔥 NAYA: Rate Limiter ke liye
+import time       
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
@@ -35,7 +35,6 @@ async def deploy_rate_limit(request: Request):
     if client_ip not in DEPLOY_LIMITS:
         DEPLOY_LIMITS[client_ip] = []
         
-    # Purani requests clear karo
     DEPLOY_LIMITS[client_ip] = [t for t in DEPLOY_LIMITS[client_ip] if current_time - t < 60]
     
     if len(DEPLOY_LIMITS[client_ip]) >= 5:
@@ -91,15 +90,25 @@ def send_deployment_email(receiver_email: str, app_name: str, status: str, error
 
 
 # ==========================================
-# 📥 PAYLOAD MODELS
+# 📥 PAYLOAD MODELS (MODULAR)
 # ==========================================
-class NewDeployPayload(BaseModel):
+class PPAM2DeployPayload(BaseModel):
     repo_url: str       
     repo_name: str      
     app_name: str       
-    folder_path: str = ""  
-    use_docker: bool = False      
-    start_cmd: Optional[str] = None 
+    start_cmd: str      
+
+class VIPPM2DeployPayload(BaseModel):
+    repo_url: str       
+    repo_name: str      
+    app_name: str       
+    start_cmd: str      
+
+class DockerDeployPayload(BaseModel):
+    repo_url: str       
+    repo_name: str      
+    app_name: str       
+    # Docker mode mein backend auto-detect karega
 
 class ActionPayload(BaseModel):
     app_name: str
@@ -121,14 +130,13 @@ async def run_background_update(repo_path: str, pm2_name: str, repo_url: str, us
 
     secure_repo_url = repo_url
     if github_token and repo_url and "github.com" in repo_url and "@github.com" not in repo_url:
-        print("🔐 [GITHUB] Secure Access Token Injected (Hidden from Logs)")
+        print("🔐 [GITHUB] Secure Access Token Injected")
         secure_repo_url = repo_url.replace("https://github.com/", f"https://{github_token}@github.com/")
 
     try:
         await asyncio.to_thread(pull_latest_code, repo_path, secure_repo_url)
         
         if not use_docker and is_reset:
-            print(f"📦 [DEPLOY ENGINE] Installing dependencies for {pm2_name}...")
             await asyncio.to_thread(install_requirements, repo_path) 
 
         await asyncio.to_thread(restart_pm2, pm2_name, repo_path, use_docker, start_cmd)
@@ -143,81 +151,98 @@ async def run_background_update(repo_path: str, pm2_name: str, repo_url: str, us
         if user_email:
             send_deployment_email(user_email, pm2_name, "failed", error_msg)
 
+
 # ==========================================
-# 1. NEW DEPLOYMENT API - 🔥 ULTRA SECURED
+# 🚀 1. PPAM2 ENDPOINT (PUBLIC DOCKERIZED PM2)
 # ==========================================
-@router.post("/deploy-new", dependencies=[Depends(deploy_rate_limit)])
-async def create_new_deployment(
-    payload: NewDeployPayload,
-    background_tasks: BackgroundTasks,
-    current_user: str = Depends(verify_api_key) 
-):
-    # 🛡️ ANTI-HACK 1: Path Traversal Check (No '../')
+@router.post("/deploy-ppam2", dependencies=[Depends(deploy_rate_limit)])
+async def deploy_ppam2(payload: PPAM2DeployPayload, background_tasks: BackgroundTasks, current_user: str = Depends(verify_api_key)):
     if not re.match(r'^[a-zA-Z0-9_-]+$', payload.app_name):
         raise HTTPException(status_code=400, detail="❌ Invalid App Name! Only letters, numbers, hyphens, and underscores allowed.")
-
-    # 🛡️ ANTI-HACK 2: Advanced Command Injection & Inline Code Block
-    if payload.start_cmd:
-        cmd_parts = payload.start_cmd.strip().split()
-        if not cmd_parts:
-            raise HTTPException(status_code=400, detail="❌ Start command cannot be empty.")
-            
-        base_cmd = cmd_parts[0]
-        SAFE_COMMANDS = {"python", "python3", "node", "npm", "yarn", "bash", "sh", "pm2"}
         
-        if base_cmd not in SAFE_COMMANDS:
-            raise HTTPException(status_code=400, detail=f"❌ Blocked! Start command must begin with one of: {', '.join(SAFE_COMMANDS)}")
-            
-        # 💀 Block python -c "import os..." and other inline execution flags
-        if "-c" in cmd_parts or "-e" in cmd_parts or "--eval" in cmd_parts:
-            raise HTTPException(status_code=400, detail="❌ Hacker Alert! Inline code execution (-c, -e) is strictly prohibited on NEX CLOUD!")
-            
-        forbidden_chars = [";", "&", "|", "`", "$", ">", "<", "\n"]
-        if any(char in payload.start_cmd for char in forbidden_chars):
-            raise HTTPException(status_code=400, detail="❌ Scam Alert! Command chaining/injection is blocked.")
+    cmd_parts = payload.start_cmd.strip().split()
+    if not cmd_parts or cmd_parts[0] not in {"python", "python3", "node", "npm", "yarn", "bash", "sh"}:
+        raise HTTPException(status_code=400, detail="❌ Blocked! Invalid start command.")
+    if "-c" in cmd_parts or "-e" in cmd_parts or "--eval" in cmd_parts:
+        raise HTTPException(status_code=400, detail="❌ Hacker Alert! Inline execution blocked.")
 
     user_info = await get_user_by_username(current_user)
-    
-    # 🛑 THE UNBREAKABLE PREMIUM LOCK
     if not user_info or not user_info.get("is_premium"):
         raise HTTPException(status_code=403, detail="🔒 Premium Plan Required!")
 
-    # 🛑 THE UNBREAKABLE PM2 VIP LOCK
-    if not payload.use_docker:
-        if not user_info.get("pm2_access", False):
-            raise HTTPException(status_code=403, detail="🔒 PM2 Access Restricted! You need Admin approval.")
-
-    if not payload.use_docker and not payload.start_cmd:
-        raise HTTPException(status_code=400, detail="❌ PM2 ke liye start_cmd toh bhej!")
-
-    if not payload.use_docker and check_pm2_exists(payload.app_name):
-        raise HTTPException(status_code=400, detail="❌ App Name server pe pehle se taken hai!")
-        
     if await check_pm2_name_in_db(payload.app_name):
         raise HTTPException(status_code=400, detail="❌ App Name database mein pehle se taken hai!")
 
     auto_folder_path = f"/home/ubuntu/nex_cloud_apps/{current_user}/{payload.app_name}"
 
     bot_data = {
-        "repo_url": payload.repo_url,    
-        "repo_name": payload.repo_name,  
-        "pm2_name": payload.app_name,
-        "folder_path": auto_folder_path, 
-        "use_docker": payload.use_docker,
-        "start_cmd": payload.start_cmd,
-        "owner": current_user,
-        "auto_deploy": True,
-        "update_pending": False 
+        "repo_url": payload.repo_url, "repo_name": payload.repo_name, "pm2_name": payload.app_name,
+        "folder_path": auto_folder_path, "use_docker": True, "start_cmd": payload.start_cmd,
+        "owner": current_user, "auto_deploy": True, "update_pending": False 
     }
     await register_new_bot(bot_data)
 
-    background_tasks.add_task(
-        run_background_update, 
-        auto_folder_path, payload.app_name, payload.repo_url, 
-        payload.use_docker, payload.start_cmd, current_user, True
-    )
+    background_tasks.add_task(run_background_update, auto_folder_path, payload.app_name, payload.repo_url, True, payload.start_cmd, current_user, True)
+    return {"status": "success", "message": f"✅ PPAM2 Bot '{payload.app_name}' registered! Building Safe Container..."}
 
-    return {"status": "success", "message": f"✅ Bot '{payload.app_name}' registered! Deployment started in background."}
+# ==========================================
+# 👑 2. VIP PM2 ENDPOINT (TERA ADMIN MODE)
+# ==========================================
+@router.post("/deploy-vip-pm2", dependencies=[Depends(deploy_rate_limit)])
+async def deploy_vip_pm2(payload: VIPPM2DeployPayload, background_tasks: BackgroundTasks, current_user: str = Depends(verify_api_key)):
+    if not re.match(r'^[a-zA-Z0-9_-]+$', payload.app_name):
+        raise HTTPException(status_code=400, detail="❌ Invalid App Name!")
+        
+    cmd_parts = payload.start_cmd.strip().split()
+    if not cmd_parts or cmd_parts[0] not in {"python", "python3", "node", "npm", "yarn", "bash", "sh", "pm2"}:
+        raise HTTPException(status_code=400, detail="❌ Blocked! Invalid start command.")
+
+    user_info = await get_user_by_username(current_user)
+    
+    if not user_info.get("pm2_access", False):
+        raise HTTPException(status_code=403, detail="🔒 VIP PM2 Access Restricted! You need Admin approval.")
+
+    if check_pm2_exists(payload.app_name) or await check_pm2_name_in_db(payload.app_name):
+        raise HTTPException(status_code=400, detail="❌ App Name server pe pehle se taken hai!")
+
+    auto_folder_path = f"/home/ubuntu/nex_cloud_apps/{current_user}/{payload.app_name}"
+
+    bot_data = {
+        "repo_url": payload.repo_url, "repo_name": payload.repo_name, "pm2_name": payload.app_name,
+        "folder_path": auto_folder_path, "use_docker": False, "start_cmd": payload.start_cmd, 
+        "owner": current_user, "auto_deploy": True, "update_pending": False 
+    }
+    await register_new_bot(bot_data)
+
+    background_tasks.add_task(run_background_update, auto_folder_path, payload.app_name, payload.repo_url, False, payload.start_cmd, current_user, True)
+    return {"status": "success", "message": f"✅ VIP Bot '{payload.app_name}' started directly on Server!"}
+
+# ==========================================
+# 🐳 3. PURE DOCKER ENDPOINT
+# ==========================================
+@router.post("/deploy-docker", dependencies=[Depends(deploy_rate_limit)])
+async def deploy_pure_docker(payload: DockerDeployPayload, background_tasks: BackgroundTasks, current_user: str = Depends(verify_api_key)):
+    if not re.match(r'^[a-zA-Z0-9_-]+$', payload.app_name):
+        raise HTTPException(status_code=400, detail="❌ Invalid App Name!")
+
+    user_info = await get_user_by_username(current_user)
+    if not user_info or not user_info.get("is_premium"):
+        raise HTTPException(status_code=403, detail="🔒 Premium Plan Required!")
+
+    if await check_pm2_name_in_db(payload.app_name):
+        raise HTTPException(status_code=400, detail="❌ App Name taken!")
+
+    auto_folder_path = f"/home/ubuntu/nex_cloud_apps/{current_user}/{payload.app_name}"
+
+    bot_data = {
+        "repo_url": payload.repo_url, "repo_name": payload.repo_name, "pm2_name": payload.app_name,
+        "folder_path": auto_folder_path, "use_docker": True, "start_cmd": None, 
+        "owner": current_user, "auto_deploy": True, "update_pending": False 
+    }
+    await register_new_bot(bot_data)
+
+    background_tasks.add_task(run_background_update, auto_folder_path, payload.app_name, payload.repo_url, True, None, current_user, True)
+    return {"status": "success", "message": f"✅ Docker Bot '{payload.app_name}' building from repository!"}
 
 # ==========================================
 # 2. GITHUB WEBHOOK API (🔒 SECURED WITH HMAC)
@@ -232,10 +257,8 @@ async def github_webhook(
     if x_github_event == "ping": return {"status": "success", "message": "Webhook Connected!"}
     if x_github_event != "push": return {"status": "ignored"}
 
-    # 🔒 ANTI-HACK: STRICT Verify GitHub Signature
     webhook_secret = os.getenv("GITHUB_WEBHOOK_SECRET")
     if not webhook_secret:
-        # GPT ki khwahish poori: Agar secret nahi hai toh seedha 500 error!
         raise HTTPException(status_code=500, detail="🚨 Server Misconfiguration: GITHUB_WEBHOOK_SECRET is not set!")
         
     if not x_hub_signature_256:
@@ -354,4 +377,4 @@ async def delete_bot_from_db(app_name: str):
     from CLOUDSERVER.database.database import deploys_collection
     result = await deploys_collection.delete_one({"pm2_name": app_name})
     return result.deleted_count > 0
-             
+    
