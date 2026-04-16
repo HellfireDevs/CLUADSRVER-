@@ -58,7 +58,6 @@ def install_requirements(folder_path: str):
     else:
         print("⚠️ [PIP] No requirements.txt found. Skipping pip install.")
 
-
 def pull_latest_code(repo_path: str, repo_url: str = None):
     """
     Smart Clone/Pull & Auto-VENV with GUNDA FORCE PULL (Clean + Reset)
@@ -79,7 +78,6 @@ def pull_latest_code(repo_path: str, repo_url: str = None):
             subprocess.run(["git", "remote", "add", "origin", repo_url], cwd=repo_path, check=True)
             subprocess.run(["git", "fetch", "--all"], cwd=repo_path, check=True)
             
-            # Smart Branch Resolver (main vs master)
             try:
                 subprocess.run(["git", "reset", "--hard", "origin/main"], cwd=repo_path, check=True)
             except:
@@ -89,16 +87,15 @@ def pull_latest_code(repo_path: str, repo_url: str = None):
         else:
             print(f"📥 [GIT] Updating existing code in {repo_path}...")
             
-            # 🔥 PRIVATE REPO FIX: Har baar pull se pehle Naya Token URL force set karo!
             if repo_url:
                 print("🔐 [GIT] Updating remote URL for seamless authentication...")
                 subprocess.run(["git", "remote", "set-url", "origin", repo_url], cwd=repo_path, check=True)
             
             subprocess.run(["git", "fetch", "--all"], cwd=repo_path, check=True)
             
-            # 💣 GUNDA LOGIC: Force clean untracked garbage before reset!
+            # 💣 FIX: Clean karte waqt venv ko ignore karo taaki delete na ho!
             print(f"🧹 [GIT] Sweeping local untracked changes...")
-            subprocess.run(["git", "clean", "-fd"], cwd=repo_path, check=True) 
+            subprocess.run(["git", "clean", "-fd", "-e", "venv"], cwd=repo_path, check=True) 
             
             try:
                 subprocess.run(["git", "reset", "--hard", "origin/main"], cwd=repo_path, check=True)
@@ -112,7 +109,6 @@ def pull_latest_code(repo_path: str, repo_url: str = None):
             print("🏗️ [VENV] Creating isolated Virtual Environment...")
             subprocess.run(["python3", "-m", "venv", "venv"], cwd=repo_path, check=True)
         
-        # Install requirements via VENV
         install_requirements(repo_path)
             
         return True
@@ -133,7 +129,6 @@ def restart_pm2(app_name: str, folder_path: str, use_docker: bool = False, start
     
     try:
         if use_docker:
-            # 🐳 DOCKER LOWERCASE FIX
             docker_app_name = app_name.lower()
             print(f"🐳 [DOCKER] Building image for {docker_app_name}...")
             subprocess.run(["docker", "build", "-t", docker_app_name, "."], cwd=folder_path, check=True)
@@ -142,9 +137,17 @@ def restart_pm2(app_name: str, folder_path: str, use_docker: bool = False, start
             subprocess.run(["docker", "stop", docker_app_name], stderr=subprocess.DEVNULL)
             subprocess.run(["docker", "rm", docker_app_name], stderr=subprocess.DEVNULL)
             
-            print(f"🚀 [DOCKER] Running new container for {docker_app_name}...")
-            subprocess.run(["docker", "run", "-d", "--name", docker_app_name, docker_app_name], check=True)
-            print(f"✅ [DOCKER] {docker_app_name} successfully deployed and running!")
+            print(f"🚀 [DOCKER] Running new container for {docker_app_name} with Limits...")
+            # VPS RAM 8GB hai toh 1GB ki limit lagayi hai
+            subprocess.run([
+                "docker", "run", "-d", 
+                "--name", docker_app_name, 
+                "--memory=1g",       
+                "--cpus=1.0",        
+                "--restart=unless-stopped", # GPT ki aakhri pro-tip
+                docker_app_name
+            ], check=True)
+            print(f"✅ [DOCKER] {docker_app_name} successfully deployed and running safely!")
             
         else:
             is_running = check_pm2_exists(app_name)
@@ -153,7 +156,7 @@ def restart_pm2(app_name: str, folder_path: str, use_docker: bool = False, start
                 if not start_cmd:
                     raise Exception("❌ PM2 ke liye start_cmd zaroori hai (e.g., 'python3 main.py')")
                 
-                # 🧠 SMART PYTHON PATH REPLACER (Fix for -m flags & Arguments)
+                # 🧠 SMART PYTHON PATH REPLACER
                 if start_cmd.startswith("python3 ") or start_cmd.startswith("python "):
                     venv_python = os.path.join(folder_path, "venv", "bin", "python")
                     
@@ -161,14 +164,11 @@ def restart_pm2(app_name: str, folder_path: str, use_docker: bool = False, start
                         start_cmd = start_cmd.replace("python3 ", f"{venv_python} ", 1)
                     else:
                         start_cmd = start_cmd.replace("python ", f"{venv_python} ", 1)
-                    
-                    print(f"🔥 [PM2] Starting newly with Full VENV CMD: {start_cmd}")
-                    cmd = f"pm2 start '{start_cmd}' --name {app_name}"
-                    subprocess.run(cmd, shell=True, cwd=folder_path, check=True)
-                else:
-                    print(f"🔥 [PM2] Starting newly with CMD: {start_cmd}")
-                    cmd = f"pm2 start '{start_cmd}' --name {app_name}"
-                    subprocess.run(cmd, shell=True, cwd=folder_path, check=True)
+                
+                print(f"🔥 [PM2] Starting newly with Full VENV CMD: {start_cmd}")
+                
+                # 🛡️ FIX: shell=True hata diya aur direct list format use kiya (Hacker proof)
+                subprocess.run(["pm2", "start", start_cmd, "--name", app_name], cwd=folder_path, check=True)
                     
                 print(f"✅ [PM2] {app_name} successfully started!")
                 
