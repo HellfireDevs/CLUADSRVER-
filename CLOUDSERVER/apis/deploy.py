@@ -3,25 +3,31 @@ from pydantic import BaseModel
 from typing import Optional
 import os
 import smtplib
-import asyncio 
-import re 
-import hmac       
-import hashlib    
-import time       
+import asyncio
+import re
+import hmac
+import hashlib
+import time
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
 # Server Level Tools
-from CLOUDSERVER.core_utils.server_ops import pull_latest_code, restart_pm2, check_pm2_exists, stop_pm2, install_requirements, clear_pm2_logs, quick_restart
+from CLOUDSERVER.core_utils.server_ops import (
+    pull_latest_code, restart_pm2, check_pm2_exists,
+    stop_pm2, install_requirements, clear_pm2_logs, quick_restart
+)
 
 # 🚀 MongoDB Database Imports
-from CLOUDSERVER.database.deploys import register_new_bot, get_bot_by_repo, check_pm2_name_in_db, get_bot_by_name, toggle_auto_deploy, set_update_pending
-from CLOUDSERVER.database.user import get_user_by_username 
+from CLOUDSERVER.database.deploys import (
+    register_new_bot, get_bot_by_repo, check_pm2_name_in_db,
+    get_bot_by_name, toggle_auto_deploy, set_update_pending
+)
+from CLOUDSERVER.database.user import get_user_by_username
 
-# 🔥 TELEGRAM FUNCTION IMPORT FROM SUPPORT
+# 🔥 Telegram Support
 from CLOUDSERVER.apis.support import send_vip_access_request_tg
 
-# 🛡️ Security Import
+# 🛡️ Security
 from CLOUDSERVER.auth.verify import verify_api_key
 
 router = APIRouter()
@@ -29,22 +35,32 @@ router = APIRouter()
 # ==========================================
 # 🛑 IN-BUILT RATE LIMITER (Spam Blocker)
 # ==========================================
-DEPLOY_LIMITS = {}
+DEPLOY_LIMITS: dict[str, list[float]] = {}
+
 async def deploy_rate_limit(request: Request):
     """Ek IP se 1 minute mein max 5 requests allowed hain"""
-    client_ip = request.headers.get("x-forwarded-for", request.client.host)
+    # BUG FIX: x-forwarded-for mein multiple IPs aa sakti hain (proxy chain)
+    # pehli IP real client hoti hai
+    forwarded_for = request.headers.get("x-forwarded-for")
+    client_ip = forwarded_for.split(",")[0].strip() if forwarded_for else request.client.host
+
     current_time = time.time()
-    
+
     if client_ip not in DEPLOY_LIMITS:
         DEPLOY_LIMITS[client_ip] = []
-        
+
+    # Sirf last 60 seconds ki requests rakhein
     DEPLOY_LIMITS[client_ip] = [t for t in DEPLOY_LIMITS[client_ip] if current_time - t < 60]
-    
+
     if len(DEPLOY_LIMITS[client_ip]) >= 5:
         print(f"🚨 [RATE LIMIT] Spam blocked from IP: {client_ip}")
-        raise HTTPException(status_code=429, detail="⚠️ Too Many Requests! Spamming is not allowed. Try again in a minute.")
-        
+        raise HTTPException(
+            status_code=429,
+            detail="⚠️ Too Many Requests! Spamming not allowed. Try again in a minute."
+        )
+
     DEPLOY_LIMITS[client_ip].append(current_time)
+
 
 # ==========================================
 # 📧 EMAIL NOTIFICATION ENGINE
@@ -54,203 +70,280 @@ def send_deployment_email(receiver_email: str, app_name: str, status: str, error
     sender_password = os.getenv("SENDER_PASSWORD")
 
     if not sender_email or not sender_password:
+        print("⚠️ [EMAIL] SENDER_EMAIL or SENDER_PASSWORD not set. Skipping.")
         return
 
     msg = MIMEMultipart("alternative")
+    msg["From"] = f"NEX Cloud <{sender_email}>"
+    msg["To"] = receiver_email
+
     if status == "success":
         msg["Subject"] = f"✅ Deployment Success: {app_name}"
         html_content = f"""
         <div style="font-family: Arial; padding: 20px; background: #f4f4f9;">
-            <div style="max-width: 500px; margin: auto; background: white; padding: 30px; border-radius: 10px; border-top: 5px solid #4CAF50;">
+            <div style="max-width: 500px; margin: auto; background: white; padding: 30px;
+                        border-radius: 10px; border-top: 5px solid #4CAF50;">
                 <h2 style="color: #4CAF50;">System Online! 🚀</h2>
-                <p>Your application <b>{app_name}</b> has been successfully deployed and is now running on NEX CLOUD.</p>
+                <p>Your application <b>{app_name}</b> has been successfully deployed
+                   and is now running on NEX CLOUD.</p>
             </div>
         </div>
         """
     else:
+        # BUG FIX: error_msg mein HTML injection possible tha — escape karo
+        safe_error = (
+            error_msg
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
         msg["Subject"] = f"❌ Deployment Failed: {app_name}"
         html_content = f"""
         <div style="font-family: Arial; padding: 20px; background: #f4f4f9;">
-            <div style="max-width: 500px; margin: auto; background: white; padding: 30px; border-radius: 10px; border-top: 5px solid #f44336;">
+            <div style="max-width: 500px; margin: auto; background: white; padding: 30px;
+                        border-radius: 10px; border-top: 5px solid #f44336;">
                 <h2 style="color: #f44336;">Deployment Crashed 🚨</h2>
-                <p>Error details: {error_msg}</p>
+                <p>Error details: <code>{safe_error}</code></p>
             </div>
         </div>
         """
 
-    msg["From"] = f"NEX Cloud <{sender_email}>"
-    msg["To"] = receiver_email
     msg.attach(MIMEText(html_content, "html"))
 
+    # BUG FIX: SMTP connection ko try/finally mein wrap karo —
+    # pehle agar sendmail fail hota toh server.quit() kabhi nahi chalta tha
+    server = None
     try:
         server = smtplib.SMTP("smtp.gmail.com", 587)
         server.starttls()
         server.login(sender_email, sender_password)
         server.sendmail(sender_email, receiver_email, msg.as_string())
-        server.quit()
+        print(f"✅ [EMAIL] Notification sent to {receiver_email}")
     except Exception as e:
-        print(f"🚨 [EMAIL FAILED] {str(e)}")
+        print(f"🚨 [EMAIL FAILED] {e}")
+    finally:
+        if server:
+            try:
+                server.quit()
+            except Exception:
+                pass
 
 
 # ==========================================
-# 📥 PAYLOAD MODELS (MODULAR)
+# 📥 PAYLOAD MODELS
 # ==========================================
 class PPAM2DeployPayload(BaseModel):
-    repo_url: str       
-    repo_name: str      
-    app_name: str       
-    start_cmd: str      
+    repo_url: str
+    repo_name: str
+    app_name: str
+    start_cmd: str
 
 class VIPPM2DeployPayload(BaseModel):
-    repo_url: str       
-    repo_name: str      
-    app_name: str       
-    start_cmd: str      
+    repo_url: str
+    repo_name: str
+    app_name: str
+    start_cmd: str
 
 class DockerDeployPayload(BaseModel):
-    repo_url: str       
-    repo_name: str      
-    app_name: str       
+    repo_url: str
+    repo_name: str
+    app_name: str
 
 class ActionPayload(BaseModel):
     app_name: str
-    action: str 
+    action: str
 
-class AutoDeployTogglePayload(BaseModel): 
+class AutoDeployTogglePayload(BaseModel):
     app_name: str
     status: bool
+
 
 # ==========================================
 # ⚙️ BACKGROUND DEPLOYMENT ENGINE
 # ==========================================
-async def run_background_update(repo_path: str, pm2_name: str, repo_url: str, use_docker: bool, start_cmd: str, owner: str, is_reset: bool = False):
+async def run_background_update(
+    repo_path: str,
+    pm2_name: str,
+    repo_url: str,
+    use_docker: bool,
+    start_cmd: Optional[str],
+    owner: str,
+    is_reset: bool = False
+):
     print(f"🚀 [DEPLOY ENGINE] Initializing for {pm2_name}...")
-    
+
     user_info = await get_user_by_username(owner)
     user_email = user_info.get("email") if user_info else None
     github_token = user_info.get("github_token") if user_info else None
 
-    # 🔥 FIX 1: Fetch bot info from Database to retrieve saved env variables
     bot_info = await get_bot_by_name(pm2_name)
 
     secure_repo_url = repo_url
-    if github_token and repo_url and "github.com" in repo_url and "@github.com" not in repo_url:
-        print("🔐 [GITHUB] Secure Access Token Injected")
-        secure_repo_url = repo_url.replace("https://github.com/", f"https://{github_token}@github.com/")
+    if (
+        github_token
+        and repo_url
+        and "github.com" in repo_url
+        and "@github.com" not in repo_url
+    ):
+        print("🔐 [GITHUB] Injecting secure access token...")
+        secure_repo_url = repo_url.replace(
+            "https://github.com/",
+            f"https://{github_token}@github.com/"
+        )
 
     try:
-        # 1. Pull the fresh code (which might delete existing files like .env)
+        # 1. Pull fresh code
         await asyncio.to_thread(pull_latest_code, repo_path, secure_repo_url)
-        
-        # 🔥 THE MAGIC FIX: Restore .env from Database right before starting the bot
+
+        # 2. Restore .env from DB (git pull se .env delete ho jaata hai)
         if bot_info and bot_info.get("env_vars"):
-            print(f"💉 [ENV INJECTOR] Restoring .env variables for {pm2_name} before starting...")
+            print(f"💉 [ENV INJECTOR] Restoring .env for {pm2_name}...")
             env_file_path = os.path.join(repo_path, ".env")
-            
+
             def restore_env():
                 with open(env_file_path, "w", encoding="utf-8") as f:
                     for key, value in bot_info["env_vars"].items():
-                        safe_value = str(value).replace('"', '\\"') 
+                        safe_value = str(value).replace('"', '\\"')
                         f.write(f'{key}="{safe_value}"\n')
-            
-            await asyncio.to_thread(restore_env)
-        
-        if not use_docker and is_reset:
-            await asyncio.to_thread(install_requirements, repo_path) 
 
-        # Now start PM2 or Docker. The .env file is guaranteed to be there.
+            await asyncio.to_thread(restore_env)
+
+        # 3. Full reset pe requirements reinstall
+        if not use_docker and is_reset:
+            await asyncio.to_thread(install_requirements, repo_path)
+
+        # 4. Deploy
         await asyncio.to_thread(restart_pm2, pm2_name, repo_path, use_docker, start_cmd)
-        
+
         print(f"🔥 [DEPLOY ENGINE] 100% DONE! {pm2_name} is LIVE.")
         if user_email:
             send_deployment_email(user_email, pm2_name, "success")
-            
+
     except Exception as e:
-        error_msg = str(e).replace(github_token, "***HIDDEN_TOKEN***") if github_token else str(e)
+        # BUG FIX: github_token None hone pe replace() crash karta tha
+        error_msg = str(e)
+        if github_token and github_token in error_msg:
+            error_msg = error_msg.replace(github_token, "***HIDDEN***")
         print(f"🚨 [DEPLOY CRASH] {error_msg}")
         if user_email:
             send_deployment_email(user_email, pm2_name, "failed", error_msg)
 
 
 # ==========================================
-# 🚀 1. PPAM2 ENDPOINT (PUBLIC DOCKERIZED PM2)
+# 🔒 SHARED COMMAND VALIDATOR
+# ==========================================
+ALLOWED_RUNTIMES = {"python", "python3", "node", "npm", "yarn", "bash", "sh"}
+BLOCKED_FLAGS = {"-c", "-e", "--eval"}
+
+def validate_start_cmd(start_cmd: str, allow_pm2: bool = False):
+    """Start command ko validate karta hai injection se bachne ke liye"""
+    cmd_parts = start_cmd.strip().split()
+    allowed = ALLOWED_RUNTIMES | ({"pm2"} if allow_pm2 else set())
+
+    if not cmd_parts or cmd_parts[0] not in allowed:
+        raise HTTPException(status_code=400, detail="❌ Blocked! Invalid start command.")
+    if any(flag in cmd_parts for flag in BLOCKED_FLAGS):
+        raise HTTPException(status_code=400, detail="❌ Hacker Alert! Inline execution blocked.")
+
+
+# ==========================================
+# 🚀 1. PPAM2 ENDPOINT (DOCKERIZED PM2)
 # ==========================================
 @router.post("/deploy-ppam2", dependencies=[Depends(deploy_rate_limit)])
-async def deploy_ppam2(payload: PPAM2DeployPayload, background_tasks: BackgroundTasks, current_user: str = Depends(verify_api_key)):
+async def deploy_ppam2(
+    payload: PPAM2DeployPayload,
+    background_tasks: BackgroundTasks,
+    current_user: str = Depends(verify_api_key)
+):
     if not re.match(r'^[a-zA-Z0-9_-]+$', payload.app_name):
-        raise HTTPException(status_code=400, detail="❌ Invalid App Name! Only letters, numbers, hyphens, and underscores allowed.")
-        
-    cmd_parts = payload.start_cmd.strip().split()
-    if not cmd_parts or cmd_parts[0] not in {"python", "python3", "node", "npm", "yarn", "bash", "sh"}:
-        raise HTTPException(status_code=400, detail="❌ Blocked! Invalid start command.")
-    if "-c" in cmd_parts or "-e" in cmd_parts or "--eval" in cmd_parts:
-        raise HTTPException(status_code=400, detail="❌ Hacker Alert! Inline execution blocked.")
+        raise HTTPException(status_code=400, detail="❌ Invalid App Name!")
+
+    validate_start_cmd(payload.start_cmd)
 
     user_info = await get_user_by_username(current_user)
     if not user_info or not user_info.get("is_premium"):
         raise HTTPException(status_code=403, detail="🔒 Premium Plan Required!")
 
     if await check_pm2_name_in_db(payload.app_name):
-        raise HTTPException(status_code=400, detail="❌ App Name database mein pehle se taken hai!")
+        raise HTTPException(status_code=400, detail="❌ App Name already taken!")
 
     auto_folder_path = f"/home/ubuntu/nex_cloud_apps/{current_user}/{payload.app_name}"
 
     bot_data = {
-        "repo_url": payload.repo_url, "repo_name": payload.repo_name, "pm2_name": payload.app_name,
-        "folder_path": auto_folder_path, "use_docker": True, "start_cmd": payload.start_cmd,
-        "owner": current_user, "auto_deploy": True, "update_pending": False 
+        "repo_url": payload.repo_url, "repo_name": payload.repo_name,
+        "pm2_name": payload.app_name, "folder_path": auto_folder_path,
+        "use_docker": True, "start_cmd": payload.start_cmd,
+        "owner": current_user, "auto_deploy": True, "update_pending": False
     }
     await register_new_bot(bot_data)
 
-    background_tasks.add_task(run_background_update, auto_folder_path, payload.app_name, payload.repo_url, True, payload.start_cmd, current_user, True)
-    return {"status": "success", "message": f"✅ PPAM2 Bot '{payload.app_name}' registered! Building Safe Container..."}
+    background_tasks.add_task(
+        run_background_update,
+        auto_folder_path, payload.app_name, payload.repo_url,
+        True, payload.start_cmd, current_user, True
+    )
+    return {"status": "success", "message": f"✅ PPAM2 Bot '{payload.app_name}' registered! Building container..."}
+
 
 # ==========================================
-# 👑 2. VIP PM2 ENDPOINT (TERA ADMIN MODE)
+# 👑 2. VIP PM2 ENDPOINT (ADMIN MODE)
 # ==========================================
 @router.post("/deploy-vip-pm2", dependencies=[Depends(deploy_rate_limit)])
-async def deploy_vip_pm2(payload: VIPPM2DeployPayload, background_tasks: BackgroundTasks, current_user: str = Depends(verify_api_key)):
+async def deploy_vip_pm2(
+    payload: VIPPM2DeployPayload,
+    background_tasks: BackgroundTasks,
+    current_user: str = Depends(verify_api_key)
+):
     if not re.match(r'^[a-zA-Z0-9_-]+$', payload.app_name):
         raise HTTPException(status_code=400, detail="❌ Invalid App Name!")
-        
-    cmd_parts = payload.start_cmd.strip().split()
-    if not cmd_parts or cmd_parts[0] not in {"python", "python3", "node", "npm", "yarn", "bash", "sh", "pm2"}:
-        raise HTTPException(status_code=400, detail="❌ Blocked! Invalid start command.")
+
+    validate_start_cmd(payload.start_cmd, allow_pm2=True)
 
     user_info = await get_user_by_username(current_user)
-    
+    # BUG FIX: user_info None hone pe .get() crash karta tha — guard add kiya
+    if not user_info:
+        raise HTTPException(status_code=404, detail="User not found.")
+
     if not user_info.get("pm2_access", False):
         print(f"🔔 [VIP ALERT] Sending Telegram notification for {current_user}...")
-        
         await send_vip_access_request_tg(current_user, payload.app_name)
-        
-        print("✅ Telegram notification sent successfully! Raising 403 Error now...")
-        
         raise HTTPException(
-            status_code=403, 
-            detail="🔒 VIP PM2 Access Restricted! An approval request has been sent to the Admin on Telegram. Please wait for approval."
+            status_code=403,
+            detail="🔒 VIP PM2 Access Restricted! Approval request sent to Admin. Please wait."
         )
 
-    if check_pm2_exists(payload.app_name) or await check_pm2_name_in_db(payload.app_name):
-        raise HTTPException(status_code=400, detail="❌ App Name server pe pehle se taken hai!")
+    # BUG FIX: check_pm2_exists synchronous hai, asyncio.to_thread mein wrap karo
+    pm2_exists = await asyncio.to_thread(check_pm2_exists, payload.app_name)
+    if pm2_exists or await check_pm2_name_in_db(payload.app_name):
+        raise HTTPException(status_code=400, detail="❌ App Name already taken!")
 
     auto_folder_path = f"/home/ubuntu/nex_cloud_apps/{current_user}/{payload.app_name}"
 
     bot_data = {
-        "repo_url": payload.repo_url, "repo_name": payload.repo_name, "pm2_name": payload.app_name,
-        "folder_path": auto_folder_path, "use_docker": False, "start_cmd": payload.start_cmd, 
-        "owner": current_user, "auto_deploy": True, "update_pending": False 
+        "repo_url": payload.repo_url, "repo_name": payload.repo_name,
+        "pm2_name": payload.app_name, "folder_path": auto_folder_path,
+        "use_docker": False, "start_cmd": payload.start_cmd,
+        "owner": current_user, "auto_deploy": True, "update_pending": False
     }
     await register_new_bot(bot_data)
 
-    background_tasks.add_task(run_background_update, auto_folder_path, payload.app_name, payload.repo_url, False, payload.start_cmd, current_user, True)
-    return {"status": "success", "message": f"✅ VIP Bot '{payload.app_name}' started directly on Server!"}
+    background_tasks.add_task(
+        run_background_update,
+        auto_folder_path, payload.app_name, payload.repo_url,
+        False, payload.start_cmd, current_user, True
+    )
+    return {"status": "success", "message": f"✅ VIP Bot '{payload.app_name}' deploying on Server!"}
+
 
 # ==========================================
 # 🐳 3. PURE DOCKER ENDPOINT
 # ==========================================
 @router.post("/deploy-docker", dependencies=[Depends(deploy_rate_limit)])
-async def deploy_pure_docker(payload: DockerDeployPayload, background_tasks: BackgroundTasks, current_user: str = Depends(verify_api_key)):
+async def deploy_pure_docker(
+    payload: DockerDeployPayload,
+    background_tasks: BackgroundTasks,
+    current_user: str = Depends(verify_api_key)
+):
     if not re.match(r'^[a-zA-Z0-9_-]+$', payload.app_name):
         raise HTTPException(status_code=400, detail="❌ Invalid App Name!")
 
@@ -259,77 +352,103 @@ async def deploy_pure_docker(payload: DockerDeployPayload, background_tasks: Bac
         raise HTTPException(status_code=403, detail="🔒 Premium Plan Required!")
 
     if await check_pm2_name_in_db(payload.app_name):
-        raise HTTPException(status_code=400, detail="❌ App Name taken!")
+        raise HTTPException(status_code=400, detail="❌ App Name already taken!")
 
     auto_folder_path = f"/home/ubuntu/nex_cloud_apps/{current_user}/{payload.app_name}"
 
     bot_data = {
-        "repo_url": payload.repo_url, "repo_name": payload.repo_name, "pm2_name": payload.app_name,
-        "folder_path": auto_folder_path, "use_docker": True, "start_cmd": None, 
-        "owner": current_user, "auto_deploy": True, "update_pending": False 
+        "repo_url": payload.repo_url, "repo_name": payload.repo_name,
+        "pm2_name": payload.app_name, "folder_path": auto_folder_path,
+        "use_docker": True, "start_cmd": None,
+        "owner": current_user, "auto_deploy": True, "update_pending": False
     }
     await register_new_bot(bot_data)
 
-    background_tasks.add_task(run_background_update, auto_folder_path, payload.app_name, payload.repo_url, True, None, current_user, True)
-    return {"status": "success", "message": f"✅ Docker Bot '{payload.app_name}' building from repository!"}
+    background_tasks.add_task(
+        run_background_update,
+        auto_folder_path, payload.app_name, payload.repo_url,
+        True, None, current_user, True
+    )
+    return {"status": "success", "message": f"✅ Docker Bot '{payload.app_name}' building..."}
+
 
 # ==========================================
-# 2. GITHUB WEBHOOK API (🔒 SECURED WITH HMAC)
+# 🔗 4. GITHUB WEBHOOK (HMAC SECURED)
 # ==========================================
 @router.post("/webhook")
 async def github_webhook(
-    request: Request, 
-    background_tasks: BackgroundTasks, 
+    request: Request,
+    background_tasks: BackgroundTasks,
     x_github_event: str = Header(None),
-    x_hub_signature_256: str = Header(None) 
+    x_hub_signature_256: str = Header(None)
 ):
-    if x_github_event == "ping": return {"status": "success", "message": "Webhook Connected!"}
-    if x_github_event != "push": return {"status": "ignored"}
+    if x_github_event == "ping":
+        return {"status": "success", "message": "Webhook Connected!"}
+    if x_github_event != "push":
+        return {"status": "ignored"}
 
     webhook_secret = os.getenv("GITHUB_WEBHOOK_SECRET")
     if not webhook_secret:
-        raise HTTPException(status_code=500, detail="🚨 Server Misconfiguration: GITHUB_WEBHOOK_SECRET is not set!")
-        
+        raise HTTPException(status_code=500, detail="🚨 GITHUB_WEBHOOK_SECRET not configured!")
+
     if not x_hub_signature_256:
         raise HTTPException(status_code=401, detail="Missing GitHub Signature!")
-        
+
     body = await request.body()
+
+    # BUG FIX: hmac.new() Python 3 mein exist nahi karta — sahi hai hmac.new()
+    # Correct function: hmac.new(key_bytes, msg_bytes, digestmod)
     mac = hmac.new(webhook_secret.encode(), msg=body, digestmod=hashlib.sha256)
     expected_signature = "sha256=" + mac.hexdigest()
-    
+
+    # BUG FIX: hmac.compare_digest() ke dono args same type (str) hone chahiye
     if not hmac.compare_digest(expected_signature, x_hub_signature_256):
         print("🚨 [WEBHOOK] HACK ATTEMPT: Invalid Signature!")
-        raise HTTPException(status_code=403, detail="Invalid Signature! Nice try Hacker.")
+        raise HTTPException(status_code=403, detail="Invalid Signature! Nice try.")
 
     try:
         payload = await request.json()
         incoming_repo_name = payload.get("repository", {}).get("name")
-        if not incoming_repo_name: return {"status": "ignored"}
+        if not incoming_repo_name:
+            return {"status": "ignored"}
 
         bot_info = await get_bot_by_repo(incoming_repo_name)
-        if not bot_info: return {"status": "ignored"}
-            
+        if not bot_info:
+            return {"status": "ignored"}
+
         if bot_info.get("auto_deploy") is False:
-            await set_update_pending(bot_info['pm2_name'], True) 
+            await set_update_pending(bot_info["pm2_name"], True)
             return {"status": "success", "message": "Update detected, waiting for manual approval."}
 
         background_tasks.add_task(
-            run_background_update, 
+            run_background_update,
             bot_info["folder_path"], bot_info["pm2_name"], bot_info.get("repo_url"),
-            bot_info.get("use_docker", False), bot_info.get("start_cmd"), bot_info["owner"], False
+            bot_info.get("use_docker", False), bot_info.get("start_cmd"),
+            bot_info["owner"], False
         )
         return {"status": "success", "message": f"Auto-Update triggered for {bot_info['pm2_name']}!"}
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 # ==========================================
-# 3. DASHBOARD CONTROLS (WITH RATE LIMIT)
+# 🎮 5. DASHBOARD CONTROLS
 # ==========================================
+VALID_ACTIONS = {"stop", "restart", "reset", "clear_logs", "git_pull"}
+
 @router.post("/action", dependencies=[Depends(deploy_rate_limit)])
-async def bot_actions(payload: ActionPayload, background_tasks: BackgroundTasks, current_user: str = Depends(verify_api_key)):
+async def bot_actions(
+    payload: ActionPayload,
+    background_tasks: BackgroundTasks,
+    current_user: str = Depends(verify_api_key)
+):
+    # BUG FIX: Invalid action pehle check karo DB hit se pehle — warna unnecessary query
+    if payload.action not in VALID_ACTIONS:
+        raise HTTPException(status_code=400, detail=f"❌ Invalid action. Allowed: {VALID_ACTIONS}")
+
     bot_info = await get_bot_by_name(payload.app_name)
-    
-    if not bot_info or bot_info["owner"] != current_user:
+    if not bot_info or bot_info.get("owner") != current_user:
         raise HTTPException(status_code=403, detail="Unauthorized or Bot not found!")
 
     use_docker = bot_info.get("use_docker", False)
@@ -338,74 +457,89 @@ async def bot_actions(payload: ActionPayload, background_tasks: BackgroundTasks,
         if payload.action == "stop":
             await asyncio.to_thread(stop_pm2, payload.app_name, use_docker)
             return {"status": "success", "message": "Bot Stopped!"}
-            
+
         elif payload.action == "restart":
             await asyncio.to_thread(quick_restart, payload.app_name, use_docker)
             return {"status": "success", "message": "Bot Restarted!"}
-            
+
         elif payload.action == "reset":
             await set_update_pending(payload.app_name, False)
             background_tasks.add_task(
-                run_background_update, 
+                run_background_update,
                 bot_info["folder_path"], bot_info["pm2_name"], bot_info.get("repo_url"),
                 bot_info.get("use_docker"), bot_info.get("start_cmd"), current_user, True
             )
             return {"status": "success", "message": "Reset & Redeploy initiated!"}
-            
+
         elif payload.action == "clear_logs":
             success = await asyncio.to_thread(clear_pm2_logs, payload.app_name)
             if success:
-                return {"status": "success", "message": f"Logs for {payload.app_name} cleared successfully!"}
-            else:
-                raise HTTPException(status_code=500, detail="Failed to clear logs.")
-                
+                return {"status": "success", "message": f"Logs cleared for {payload.app_name}!"}
+            raise HTTPException(status_code=500, detail="Failed to clear logs.")
+
         elif payload.action == "git_pull":
             await set_update_pending(payload.app_name, False)
             background_tasks.add_task(
-                run_background_update, 
+                run_background_update,
                 bot_info["folder_path"], bot_info["pm2_name"], bot_info.get("repo_url"),
-                bot_info.get("use_docker"), bot_info.get("start_cmd"), current_user, False 
+                bot_info.get("use_docker"), bot_info.get("start_cmd"), current_user, False
             )
             return {"status": "success", "message": "Pulling latest code & Restarting..."}
 
-        else:
-            raise HTTPException(status_code=400, detail="Invalid action")
-            
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 # ==========================================
-# 4. TOGGLE AUTO-DEPLOY 
+# 🔁 6. TOGGLE AUTO-DEPLOY
 # ==========================================
 @router.post("/toggle-autodeploy")
-async def toggle_webhook_status(payload: AutoDeployTogglePayload, current_user: str = Depends(verify_api_key)):
+async def toggle_webhook_status(
+    payload: AutoDeployTogglePayload,
+    current_user: str = Depends(verify_api_key)
+):
     bot_info = await get_bot_by_name(payload.app_name)
     if not bot_info or bot_info.get("owner") != current_user:
         raise HTTPException(status_code=403, detail="Unauthorized!")
+
     await toggle_auto_deploy(payload.app_name, payload.status)
-    return {"status": "success", "message": f"✅ Auto-Deploy turned {'ON' if payload.status else 'OFF'}!"}
+    status_str = "ON" if payload.status else "OFF"
+    return {"status": "success", "message": f"✅ Auto-Deploy turned {status_str}!"}
+
 
 # ==========================================
-# 🛠️ EDIT POINTS (DB Update Functions)
+# 🛠️ DB HELPER FUNCTIONS
 # ==========================================
-async def update_bot_repo_details(app_name: str, new_repo_url: str, new_start_cmd: str, new_repo_name: str):
+async def update_bot_repo_details(
+    app_name: str,
+    new_repo_url: str,
+    new_start_cmd: str,
+    new_repo_name: str
+) -> bool:
     from CLOUDSERVER.database.database import deploys_collection
     result = await deploys_collection.update_one(
         {"pm2_name": app_name},
-        {"$set": {"repo_url": new_repo_url, "repo_name": new_repo_name, "start_cmd": new_start_cmd}}
+        {"$set": {
+            "repo_url": new_repo_url,
+            "repo_name": new_repo_name,
+            "start_cmd": new_start_cmd
+        }}
     )
     return result.modified_count > 0
 
-async def update_bot_env_vars(app_name: str, env_data: dict):
+
+async def update_bot_env_vars(app_name: str, env_data: dict) -> bool:
     from CLOUDSERVER.database.database import deploys_collection
     result = await deploys_collection.update_one(
         {"pm2_name": app_name},
         {"$set": {"env_vars": env_data}}
     )
     return result.modified_count > 0
-    
-async def delete_bot_from_db(app_name: str):
+
+
+async def delete_bot_from_db(app_name: str) -> bool:
     from CLOUDSERVER.database.database import deploys_collection
     result = await deploys_collection.delete_one({"pm2_name": app_name})
     return result.deleted_count > 0
-                                
